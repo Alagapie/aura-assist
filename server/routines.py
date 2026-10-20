@@ -216,7 +216,8 @@ def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
         "skipped": failed,
         "exceptions": plan["exceptions"],
         "summary": (
-            f"{name.replace('_', ' ')} complete. {len(applied)} changes applied."
+            f"{name.replace('_', ' ')} complete. {len(applied)} change"
+            f"{'s' if len(applied) != 1 else ''} applied."
             + (f" Note: {'; '.join(plan['exceptions'])}." if plan["exceptions"] else "")
             + (f" {len(failed)} steps failed." if failed else "")
         ),

@@ -333,7 +333,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         data = await run("run_routine", {"routine_name": routine})
         steps = len(data.get("steps", []))
         if data.get("requires_confirmation") and steps:
-            return _respond(session, f"{data['summary'].rstrip('.')} Shall I go ahead?", tool_log)
+            return _respond(session, f"{data['summary']} Shall I go ahead?", tool_log)
         return _respond(session, data.get("summary", "Done."), tool_log)
 
     # 4 - memory / vision / events
@@ -404,7 +404,9 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         names = ", ".join(d["name"] for d in on[:3])
         more = f" and {len(on) - 3} more" if len(on) > 3 else ""
         alerts = snap.get("alerts", [])
-        reply = (f"{len(on)} things are on: {names}{more}." if on else "Nothing is running right now.")
+        n = len(on)
+        reply = (f"{n} thing{'s' if n != 1 else ''} {'are' if n != 1 else 'is'} on: {names}{more}."
+                 if on else "Nothing is running right now.")
         if alerts:
             reply += f" Note: {alerts[0]['message']}."
         return _respond(session, reply, tool_log)
