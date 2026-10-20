@@ -32,6 +32,15 @@ def post(path: str, payload: dict) -> dict:
         return json.loads(resp.read().decode())
 
 
+def reset_home() -> None:
+    """Start from the default scene - deterministic assertions on any run."""
+    req = urllib.request.Request(BASE + "/state/reset", data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        resp.read()
+    print("state reset -> default scene")
+
+
 def check(label: str, ok: bool, detail: str = "") -> None:
     (PASSED if ok else FAILED).append(label)
     print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f"  [{detail}]" if detail else ""))
@@ -39,6 +48,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 def main() -> int:
     session = "smoke-agent"
+    reset_home()
 
     print("\n[1] greeting is terse and mentions capabilities")
     r = post("/agent/invoke", {"message": "hello", "session_id": session})

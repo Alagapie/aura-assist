@@ -103,6 +103,20 @@ class HomeState:
             self.preferences[key] = value
         event_store.record_event(kind="preference", source="user", detail={"key": key, "value": value})
 
+    def reset(self, source: str = "reset") -> None:
+        """Restore every device to its catalogue default (tests / demo between takes).
+
+        Subscribers are notified so the 3D view and any SSE listeners snap back
+        to the initial scene too.
+        """
+        with self._lock:
+            self.devices = create_devices()
+            self.active_mode = "Manual"
+            self.preferences = {}
+        event_store.record_event(kind="state_reset", source=source,
+                                 detail={"note": "home restored to default state"})
+        self._notify()
+
     # ----------------------------------------------------- subscriptions ----
 
     def subscribe(self, callback) -> None:

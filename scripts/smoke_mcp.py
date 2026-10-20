@@ -9,6 +9,7 @@ Then:                  python scripts/smoke_mcp.py
 import asyncio
 import json
 import sys
+import urllib.request
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -16,7 +17,17 @@ from mcp.client.streamable_http import streamable_http_client
 BASE = "http://localhost:8000/mcp"
 
 
+def reset_home() -> None:
+    """Restore the default scene so plan-size assertions hold on any run."""
+    req = urllib.request.Request("http://localhost:8000/state/reset", data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        resp.read()
+    print("state reset -> default scene")
+
+
 async def main() -> int:
+    reset_home()
     async with streamable_http_client(BASE) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()

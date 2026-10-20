@@ -69,6 +69,13 @@ async def health() -> dict:
     }
 
 
+@app.post("/state/reset")
+async def state_reset() -> dict:
+    """Restore the default scene (used by tests and between demo takes)."""
+    state.reset()
+    return {"status": "ok", "devices": len(state.snapshot()["devices"])}
+
+
 @app.post("/agent/invoke")
 async def agent_invoke(payload: dict) -> dict:
     """One conversational turn: text in, spoken reply + visible tool log out."""
