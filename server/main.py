@@ -59,6 +59,26 @@ async def _startup() -> None:
     state.subscribe(publish)
 
 
+@app.get("/")
+async def index() -> dict:
+    """Landing page - this is an API server, so / lists what's available."""
+    return {
+        "service": "AuraAssist MCP Server",
+        "status": "running",
+        "endpoints": {
+            "POST /agent/invoke": "chat with the agent {message, session_id} -> {reply, tool_calls}",
+            "POST /agent/reset": "forget a conversation session",
+            "GET  /health": "liveness probe + engine mode",
+            "GET  /docs": "interactive API docs (Swagger)",
+            "GET  /events/state": "SSE stream of home-state snapshots",
+            "POST /state/patch": "direct device patch (3D simulator bridge)",
+            "POST /state/reset": "restore the default scene",
+            "POST /mcp": "MCP Streamable HTTP endpoint (what clients connect to)",
+        },
+        "try": "python scripts/chat.py  -  talk to the agent in your terminal",
+    }
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
