@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn>=0.30
+mcp>=2.0
+python-dotenv>=1.0
+# Optional - only needed when AURA_USE_BEDROCK=1:
+# boto3>=1.34
