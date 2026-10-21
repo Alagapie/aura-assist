@@ -236,10 +236,8 @@ def describe_scene(camera_id: str) -> dict:
     if "error" in scene:
         return scene
 
-    # Keep only the most confident objects for the reply, but leave the raw list
-    # intact under `all_objects` so nothing is lost for the sighting memory.
+    # Return all objects - we need full detail for accurate answers
     ranked = sorted(scene.get("objects", []), key=lambda o: o.get("confidence", 0), reverse=True)
-    top = ranked[:_SPOKEN_OBJECT_LIMIT]
 
     spoken = scene.get("summary", "")
     hazards = scene.get("hazards", [])
@@ -248,7 +246,7 @@ def describe_scene(camera_id: str) -> dict:
 
     return {
         **scene,
-        "objects": top,
+        "objects": ranked,
         "all_objects": scene.get("objects", []),
         "object_count": len(scene.get("objects", [])),
         "spoken": spoken,

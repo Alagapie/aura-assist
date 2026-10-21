@@ -29,49 +29,81 @@ _MOCK_SCENES = {
     "kitchen": {
         "room": "kitchen",
         "objects": [
-            {"label": "mug", "location": "left of sink", "confidence": 0.91},
+            {"label": "mug", "location": "on the counter near the sink", "confidence": 0.91},
             {"label": "cutting board", "location": "center counter", "confidence": 0.88},
             {"label": "keys", "location": "on the counter next to the fruit bowl", "confidence": 0.83},
+            {"label": "fruit bowl", "location": "on the kitchen counter", "confidence": 0.90},
+            {"label": "dish towel", "location": "hanging on the oven handle", "confidence": 0.78},
         ],
         "hazards": [
             {"label": "knife near counter edge", "confidence": 0.74},
         ],
         "people_count": 0,
-        "summary": "A mug and cutting board are on the counter. A knife appears close to the counter edge.",
+        "summary": "A mug and cutting board are on the counter. Keys are next to the fruit bowl. A knife appears close to the counter edge.",
     },
     "living": {
         "room": "living",
         "objects": [
-            {"label": "remote", "location": "on the sofa arm", "confidence": 0.93},
-            {"label": "wallet", "location": "on the coffee table", "confidence": 0.86},
+            {"label": "remote", "location": "on the coffee table", "confidence": 0.95},
+            {"label": "wallet", "location": "on the coffee table", "confidence": 0.88},
+            {"label": "book", "location": "on the coffee table", "confidence": 0.85},
+            {"label": "phone", "location": "on the coffee table", "confidence": 0.82},
+            {"label": "throw blanket", "location": "draped over the sofa", "confidence": 0.80},
+            {"label": "cushion", "location": "on the sofa", "confidence": 0.78},
+            {"label": "plant", "location": "in the corner near the window", "confidence": 0.87},
         ],
         "hazards": [],
         "people_count": 0,
-        "summary": "The living room is tidy. A remote is on the sofa arm and a wallet is on the coffee table.",
+        "summary": "The living room is tidy. A remote, wallet, book and phone are on the coffee table. A throw blanket is draped over the sofa and there is a plant in the corner.",
+    },
+    "bedroom": {
+        "room": "bedroom",
+        "objects": [
+            {"label": "phone", "location": "on the bedside table", "confidence": 0.92},
+            {"label": "book", "location": "on the bedside table", "confidence": 0.86},
+            {"label": "glasses", "location": "on the bedside table", "confidence": 0.80},
+            {"label": "pillow", "location": "on the bed", "confidence": 0.95},
+        ],
+        "hazards": [],
+        "people_count": 0,
+        "summary": "The bedroom looks calm. A phone, book and glasses are on the bedside table.",
+    },
+    "fridge": {
+        "room": "kitchen",
+        "objects": [
+            {"label": "milk", "location": "on the top shelf of the fridge", "confidence": 0.92},
+            {"label": "orange juice", "location": "on the top shelf of the fridge", "confidence": 0.89},
+            {"label": "leftover container", "location": "on the middle shelf of the fridge", "confidence": 0.84},
+            {"label": "yogurt", "location": "on the middle shelf of the fridge", "confidence": 0.81},
+            {"label": "eggs", "location": "in the egg tray on the fridge door", "confidence": 0.93},
+            {"label": "butter", "location": "on the fridge door shelf", "confidence": 0.87},
+            {"label": "vegetables", "location": "in the crisper drawer at the bottom", "confidence": 0.85},
+            {"label": "cheese", "location": "on the lower shelf of the fridge", "confidence": 0.83},
+        ],
+        "hazards": [],
+        "people_count": 0,
+        "summary": "The fridge has milk and orange juice on the top shelf, leftovers and yogurt in the middle, eggs and butter on the door, vegetables in the crisper, and cheese on the lower shelf.",
     },
 }
 
 # Every room in the 3D house can act as a camera, so describe_scene works for
 # any of them even when the mock only has hand-written scenes for two.
-_KNOWN_ROOMS = ("living", "bedroom", "kitchen", "bathroom", "hall")
+_KNOWN_ROOMS = ("living", "bedroom", "kitchen", "bathroom", "hall", "fridge")
 
 _PROMPT_RULES = (
-    "You are a home camera assistant. Look at the image and describe only what "
-    "is actually visible.\n"
-    "Return ONLY a JSON object, with no markdown fences and no extra text, using "
-    "exactly these keys:\n"
-    '  "room": the room name as a single lowercase word,\n'
-    '  "objects": array of {"label", "location", "confidence"} - one entry per '
-    "notable object, location phrased like \"on the coffee table\", confidence a "
-    "number 0-1,\n"
-    '  "hazards": array of {"label", "confidence"} for anything unsafe '
-    "(spill, sharp object near an edge, open flame, blocked exit),\n"
-    '  "people_count": integer number of people visible,\n'
-    '  "summary": one or two short spoken sentences about the scene.\n'
-    "Rules: never identify or describe a person's identity, face or traits - only "
-    "count them. Use the word 'possibly' in a label when you are unsure. Do not "
-    "invent objects that are not there. Keep the summary short enough to speak "
-    "aloud. Prioritise safety-relevant detail."
+    "You are analyzing a 3D render of a smart home room. Look at the EXACT positions of every object.\n"
+    "RETURN ONLY RAW JSON. NO markdown, NO explanation, NO coordinates, NO bounding boxes.\n"
+    "Format:\n"
+    '{"room":"<room_name>","objects":[{"label":"remote control","location":"on the coffee table","confidence":0.95},{"label":"book","location":"on the coffee table","confidence":0.87}],"hazards":[],"people_count":0,"summary":"..."}\n'
+    "Rules:\n"
+    "- Set \"room\" to the camera room name you are given.\n"
+    "- location MUST be a natural phrase like 'on the coffee table', 'on the bedside table', 'on the counter', 'on the sofa', 'on the floor', 'in the fridge'. NEVER output coordinates or numbers like '444, 448'.\n"
+    "- If an object sits ON a flat surface, describe that surface precisely ('on the coffee table', 'on the kitchen counter', 'on the top shelf').\n"
+    "- Include ALL visible small objects: remotes, books, phones, cups, keys, wallets, plants, cushions, blankets, bottles, food items.\n"
+    "- For fridge scenes: describe shelf positions ('top shelf', 'middle shelf', 'door shelf', 'crisper drawer').\n"
+    "- Don't duplicate objects.\n"
+    "- List hazards (knives near edges, wet floors, open flames) separately.\n"
+    "- Keep the summary conversational and accurate - max 2 sentences.\n"
 )
 
 
@@ -98,17 +130,48 @@ def _extract_json(text: str) -> dict | None:
         candidates.append(fence.group(1).strip())
 
     start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(text[start : end + 1])
+    if start != -1:
+        # Try to find complete JSON by counting braces
+        brace_count = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    candidates.append(text[start:i+1])
+                    break
+        # If truncated, try to close it
+        if brace_count > 0:
+            truncated = text[start:]
+            # Try to close arrays and objects
+            cleaned = truncated
+            # Remove incomplete strings/objects
+            cleaned = re.sub(r',\s*"[^"]*$', '', cleaned)
+            cleaned = re.sub(r',\s*$', '', cleaned)
+            # Close any open arrays/objects
+            open_braces = cleaned.count('{') - cleaned.count('}')
+            open_brackets = cleaned.count('[') - cleaned.count(']')
+            cleaned += ']' * open_brackets + '}' * open_braces
+            candidates.append(cleaned)
 
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
         except (ValueError, TypeError):
-            continue
-        if isinstance(parsed, dict):
-            return parsed
+            # Try to clean up common issues
+            cleaned = candidate
+            cleaned = re.sub(r',\s*}', '}', cleaned)
+            cleaned = re.sub(r',\s*]', ']', cleaned)
+            cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned)
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, dict):
+                    return parsed
+            except:
+                continue
     return None
 
 
@@ -224,7 +287,7 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
                     {"text": prompt},
                 ],
             }],
-            inferenceConfig={"maxTokens": 900, "temperature": 0.1},
+            inferenceConfig={"maxTokens": 1000, "temperature": 0.0},
         )
         text = response["output"]["message"]["content"][0]["text"]
     except Exception as exc:  # noqa: BLE001 - any AWS/network error must not break the demo
@@ -233,7 +296,7 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
 
     parsed = _extract_json(text)
     if parsed is None:
-        log.warning("Bedrock vision returned unparseable text: %.120s", text)
+        log.warning("Bedrock vision returned unparseable text: %.200s", text)
         return None
 
     normalised = _normalise(parsed, camera_id)

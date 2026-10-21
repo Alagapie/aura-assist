@@ -71,9 +71,10 @@ FIRST; only call again with confirm=true after the user explicitly approves.
 already groups the changes - relay it in exactly ONE sentence covering at most \
 3 facts. Never list items one by one.
 - "where are my keys/wallet/phone" -> find_object
-- "what do you see / what's in the kitchen" -> describe_scene. Its result has a \
-`spoken` field - relay that, do not list the objects one by one. Mention at most \
-3 objects, then stop. If it reports a hazard, add one concrete next step.
+- "what do you see / what's in the kitchen / what's on the table" -> describe_scene. \
+Its result has detailed objects with locations - be PRECISE. If asked "what's on the X", \
+look up objects where location mentions that surface. Give a direct answer naming \
+the actual objects you see. Don't guess from stale data if fresh vision is available.
 - Accessibility or privacy preferences -> set_user_preference
 
 SAFETY - hard rules, no exceptions:
@@ -189,7 +190,8 @@ def _summarise_call(name: str, arguments: dict, data: dict) -> str:
     if name == "find_object" and data.get("found"):
         return f"found {data['object']} at {data['location']}"
     if name == "describe_scene":
-        return f"{name}({arguments.get('camera_id')}): {len(data.get('objects', []))} objects, {len(data.get('hazards', []))} hazards"
+        obj_list = ', '.join([f"{o.get('label')} ({o.get('location')})" for o in data.get('objects', [])[:8]])
+        return f"{name}({arguments.get('camera_id')}): {obj_list or 'nothing visible'}"
     if name == "get_recent_events":
         return f"{data.get('count', 0)} events"
     if name == "get_home_snapshot":
@@ -342,10 +344,51 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
             session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
         return _respond(session, reply, tool_log)
 
+    # Fridge-content questions: call describe_scene("fridge") for accurate inventory
+    fridge_q = re.search(r"\b(what'?s|what is|show me|check|open|inside|in|contents? of)\b.*\b(fridge|refrigerator|freezer)\b"
+                         r"|\b(fridge|refrigerator|freezer)\b.*\b(content|inside|have|got|contain)", message.lower())
+    if fridge_q:
+        data, _ = await _call_tool("describe_scene", {"camera_id": "fridge"})
+        tool_log.append({"name": "describe_scene", "arguments": {"camera_id": "fridge"},
+                         "result": _summarise_call("describe_scene", {"camera_id": "fridge"}, data)})
+        if data.get("objects"):
+            inv = "; ".join([f"{o['label']} {o.get('location', '')}".strip() for o in data["objects"]])
+            message = (f"{message}\n\n[system: FRIDGE INVENTORY from describe_scene(fridge) - "
+                       f"list these items precisely. Items: {inv}. Summary: {data.get('summary', '')}]")
+        else:
+            message = f"{message}\n\n[system: Fridge appears empty or camera unavailable.]"
+
+    # Table/surface questions: force fresh vision for accuracy
+    table_match = re.search(r"what'?s on (?:the )?(.+?)(?:table|stand|desk|shelf|counter|surface)", message.lower())
+    if table_match:
+        room_hint = session.get("room") or "living"
+        # Try to infer room from context
+        if "kitchen" in message.lower(): room_hint = "kitchen"
+        elif "bedroom" in message.lower(): room_hint = "bedroom"
+        elif "hall" in message.lower(): room_hint = "hall"
+        elif "bath" in message.lower(): room_hint = "bathroom"
+        data, _ = await _call_tool("describe_scene", {"camera_id": room_hint})
+        tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room_hint},
+                         "result": _summarise_call("describe_scene", {"camera_id": room_hint}, data)})
+        if data.get("objects"):
+            surface_hint = table_match.group(1).strip() if table_match else ""
+            all_objs = data["objects"]
+            # Filter to objects on/near the mentioned surface if possible
+            on_surface = [o for o in all_objs if surface_hint and surface_hint in o.get("location", "").lower()]
+            objs_to_show = on_surface if on_surface else all_objs
+            message = (f"{message}\n\n[system: VISION EVIDENCE from describe_scene({room_hint}) - "
+                       f"use THESE exact observations, do NOT guess. Objects on/near surface: "
+                       + "; ".join([f"{o['label']} at {o.get('location','unknown')}" for o in objs_to_show])
+                       + f". All objects in room: "
+                       + "; ".join([f"{o['label']} at {o.get('location','unknown')}" for o in all_objs])
+                       + f"]. Summary: {data.get('summary','')}")
+        else:
+            message = f"{message}\n\n[system: VISION EVIDENCE shows no objects on that surface. Be precise based on what was seen.]"
+
     # Status questions: fetch the snapshot deterministically and hand the
     # digest to the model to phrase. The tool call is always visible either way.
     status_q = any(p in message.lower() for p in _STATUS_PHRASES)
-    if status_q:
+    if status_q and not table_match:
         snap, _ = await _call_tool("get_home_snapshot", {})
         tool_log.append({"name": "get_home_snapshot", "arguments": {},
                          "result": _summarise_call("get_home_snapshot", {}, snap)})
@@ -493,6 +536,27 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         count = data.get("count", 0)
         return _respond(session, f"{count} events today - device changes, sightings and routines are all in the timeline.", tool_log) if count \
             else _respond(session, "Nothing has changed here today - it's been quiet.", tool_log)
+    # Fridge content query: route to the fridge camera
+    fridge_keywords = ("fridge", "refrigerator", "freezer")
+    if any(k in plain for k in fridge_keywords) and any(k in plain for k in ("what", "in", "inside", "content", "have", "got", "show")):
+        data = await run("describe_scene", {"camera_id": "fridge"})
+        if "error" in data:
+            return _respond(session, "I can't see inside the fridge right now.", tool_log)
+        return _respond(session, data.get("summary", "The fridge contents are unclear."), tool_log)
+    # Table/surface query: describe scene and filter by surface
+    table_m = re.search(r"what.?s on (?:the )?(.+?)(?:table|stand|desk|shelf|counter)", plain)
+    if table_m or any(k in plain for k in ("on the table", "on the counter", "on the coffee table", "on the desk")):
+        room = _find_room(text) or "living"
+        data = await run("describe_scene", {"camera_id": room})
+        if "error" in data:
+            return _respond(session, f"I don't have a camera covering the {room}.", tool_log)
+        objs = data.get("objects", [])
+        if objs:
+            surface_objs = [o for o in objs if any(s in o.get("location", "").lower() for s in ("table", "counter", "stand", "desk", "shelf"))]
+            named = surface_objs if surface_objs else objs[:4]
+            parts = [f"{o['label']} ({o.get('location', 'in view')})" for o in named[:5]]
+            return _respond(session, "On the table I can see: " + ", ".join(parts) + ".", tool_log)
+        return _respond(session, data.get("summary", "Nothing on the table right now."), tool_log)
     if any(k in plain for k in ("what do you see", "what's in", "describe", "counter", "camera", "look like")):
         room = _find_room(text) or "kitchen"
         data = await run("describe_scene", {"camera_id": room})
@@ -503,6 +567,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         if hazards:
             reply += f" Heads up: {hazards[0]['label']}."
         return _respond(session, reply, tool_log)
+
 
     # 5 - device control
     action = None
