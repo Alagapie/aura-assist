@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 load_dotenv()  # reads .env: AWS creds, AURA_USE_BEDROCK, model ids
@@ -38,25 +39,36 @@ async def lifespan(app: FastAPI):
     # Mounted Starlette apps do not receive lifespan events, so the MCP
     # session manager's task group must be driven by the outer app itself.
     agent.refresh_tool_specs()
+
+    # Bridge store notifications into each SSE subscriber's queue. This must
+    # live here: passing `lifespan=` to FastAPI replaces @app.on_event("startup")
+    # handlers entirely, so a startup hook would silently never run.
+    loop = asyncio.get_running_loop()
+
+    def publish(snapshot: dict) -> None:
+        for q in list(_queues.values()):
+            loop.call_soon_threadsafe(q.put_nowait, snapshot)
+
+    state.subscribe(publish)
     async with mcp.session_manager.run():
         yield
 
 
 app = FastAPI(title="AuraAssist MCP Server", version="0.1.0", lifespan=lifespan)
 
+# The 3D simulator usually reaches us through the Vite dev proxy (same origin),
+# but allow direct browser calls too (different ports, preview builds, the
+# Streamable HTTP client in the browser). mcp-session-id is a response header the
+# MCP client has to read, so it must be exposed explicitly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["mcp-session-id"],
+)
+
 _queues: set[asyncio.Queue] = {}
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    # Bridge thread-safe store notifications into each SSE subscriber's queue.
-    loop = asyncio.get_event_loop()
-
-    def publish(snapshot: dict) -> None:
-        for q in list(_queues.values()):
-            loop.call_soon_threadsafe(lambda q=q: q.put_nowait(snapshot))
-
-    state.subscribe(publish)
 
 
 @app.get("/")
@@ -70,6 +82,7 @@ async def index() -> dict:
             "POST /agent/reset": "forget a conversation session",
             "GET  /health": "liveness probe + engine mode",
             "GET  /docs": "interactive API docs (Swagger)",
+            "GET  /state": "current home snapshot (initial sync / debugging)",
             "GET  /events/state": "SSE stream of home-state snapshots",
             "POST /state/patch": "direct device patch (3D simulator bridge)",
             "POST /state/reset": "restore the default scene",
@@ -87,6 +100,12 @@ async def health() -> dict:
         "devices": len(state.snapshot()["devices"]),
         "agent_engine": "bedrock" if os.environ.get("AURA_USE_BEDROCK") == "1" else "mock",
     }
+
+
+@app.get("/state")
+async def get_state() -> dict:
+    """Current home snapshot - used for initial sync and debugging."""
+    return state.snapshot()
 
 
 @app.post("/state/reset")
