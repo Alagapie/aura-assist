@@ -32,8 +32,33 @@ You are AuraAssist, the voice of a smart home. You control the home ONLY \
 through the provided tools. Never guess device states - call get_home_snapshot \
 first whenever the user asks about state ("is the door locked?", "what's on?").
 
+PERSONALITY - you are a calm, dry home attendant, not a call-centre bot:
+- Never open with "How can I assist you today" or any customer-service \
+script. Never close with "feel free to ask" or "is there anything else I \
+can help you with". Talk like a person who lives there too.
+- A greeting gets ONE short sentence back. Match the user's energy, don't \
+stage-manage it.
+- You know this home. Refer to rooms by name, use the digest, skip what's \
+boring. If nothing matters, say so plainly ("All quiet here.").
+
+HOME STATUS BRIEFING - for "what's happening", "what's on", "status":
+- get_home_snapshot returns a `digest` field with ready-made lines. Relay \
+them nearly verbatim, in this order: any `digest.observations` first (one \
+short line: "Your home is running normally." or "Needs attention:"), then \
+the `digest.lines` group by group (Security, Climate, Lights, Curtains).
+- `digest.observations` are verified facts worth surfacing (unlocked door, \
+oven still on, AC running while in Away mode). They are observations, NOT \
+suggestions; never invent extra ones.
+- Never add devices or rooms the digest did not mention - the grouping is \
+already the right level of detail. Do not re-state what is simply "off" \
+beyond what the lines say.
+- End with ONE short offer tied to what you just said ("Want the curtains \
+closed?", "Shall I turn the lights off?").
+
 STYLE - your replies are spoken aloud, never read:
-- Maximum 2 sentences. Round every number: "22C", never "22.3467C".
+- Maximum 2 sentences for ordinary replies. Status briefings may use up to 4 \
+short lines - one per digest group. Round every number: "22C", never \
+"22.3467C".
 - Name at most 3 devices, then summarize ("and 4 more lights off").
 - No markdown, no lists, no emoji. If a tool failed, say plainly what did \
 not happen. Never pretend an action succeeded.
@@ -42,7 +67,9 @@ TOOL SELECTION:
 - Single device control -> control_device
 - "prepare for bed", "I'm leaving", "morning" -> run_routine with confirm=false \
 FIRST; only call again with confirm=true after the user explicitly approves.
-- "what changed / what happened today" -> get_recent_events
+- "what changed / what happened today" -> get_recent_events; its digest field \
+already groups the changes - relay it in exactly ONE sentence covering at most \
+3 facts. Never list items one by one.
 - "where are my keys/wallet/phone" -> find_object
 - "what do you see / what's in the kitchen" -> describe_scene
 - Accessibility or privacy preferences -> set_user_preference
@@ -81,6 +108,29 @@ DECLINE_WORDS = {"no", "n", "nope", "nah", "cancel", "cancelled", "stop", "don't
 
 MAX_TOOL_ROUNDS = 5
 MAX_HISTORY_MESSAGES = 24
+
+# Canonical routine phrases -> routine name. Shared by both engines so a
+# demo-critical request behaves identically offline and on Bedrock.
+_ROUTINE_PHRASES: list[tuple[str, tuple[str, ...]]] = [
+    ("bedtime", ("prepare for bed", "get ready for bed", "time for bed",
+                 "bedtime routine", "going to bed")),
+    ("leaving_home", ("i'm leaving", "im leaving", "leaving now", "leaving home",
+                      "i'm off", "im off", "going out", "heading out")),
+    ("morning", ("morning routine", "wake up routine", "start the day")),
+]
+
+# Status/briefing phrases: the snapshot for these is fetched by code before
+# the model runs, so a status question ALWAYS has fresh state (and the tool
+# call is always visible in the log) no matter what the model feels like.
+_STATUS_PHRASES = (
+    "what's on", "what is on", "what's running", "what is running",
+    "what's happening", "what is happening", "happening in", "happening at",
+    "how's the house", "how is the house", "how's home", "how is home",
+    "how are things", "state of the house", "state of the home",
+    "check the house", "check the home", "house status", "home status",
+    "everything ok", "everything okay", "all good", "briefing", "brief me",
+    "what do we have", "status",
+)
 
 
 def _session(session_id: str) -> dict:
@@ -176,8 +226,8 @@ def _track_pending(session: dict, name: str, arguments: dict, data: dict) -> Non
     elif name == "run_routine" and "applied" in data:
         session["pending"] = None
     elif name == "control_device" and data.get("status") == "ok":
-        if not (session.get("pending") or {}).get("type") == "unlock":
-            session["pending"] = session.get("pending")
+        # The confirmation was consumed - the action it waited for happened.
+        session["pending"] = None
 
 
 # ------------------------------------------------------------ Bedrock path --
@@ -222,9 +272,85 @@ def _system_prompt() -> str:
             + _DEVICE_INDEX)
 
 
+def _detect_routine(message: str) -> str | None:
+    """Canonical routine phrases, routed by code (both engines agree on these).
+
+    Deliberately narrow: only unambiguous, non-question phrases. Everything
+    else (free-form like "I'm knackered, sort the house") still reaches the
+    model, which may call run_routine itself.
+    """
+    plain = message.lower().strip()
+    for name, phrases in _ROUTINE_PHRASES:
+        if any(p in plain for p in phrases):
+            return name
+    return None
+
+
 async def invoke_bedrock(message: str, session_id: str) -> dict:
     session = _session(session_id)
     tool_log: list[dict] = []
+
+    # Approvals and declines are resolved by deterministic code, never by the
+    # model - an LLM having a creative turn must not change what "yes" means.
+    pending = session.get("pending")
+    if pending:
+        plain = message.lower().strip().rstrip("?.!")
+        if _is_approval(plain):
+            if pending["type"] == "routine":
+                data, _ = await _call_tool(
+                    "run_routine", {"routine_name": pending["name"], "confirm": True})
+                tool_log.append({"name": "run_routine",
+                                 "arguments": {"routine_name": pending["name"], "confirm": True},
+                                 "result": _summarise_call("run_routine", {}, data)})
+                _track_pending(session, "run_routine", {}, data)
+                return _respond(session, data.get("summary", "Done."), tool_log)
+            if pending["type"] == "unlock":
+                guarded = _apply_guardrails(
+                    [("control_device", {"device_id": pending["device_id"],
+                                         "action": "unlock", "confirm": True})],
+                    session, message)
+                data, _ = await _call_tool(*guarded[0])
+                tool_log.append({"name": guarded[0][0], "arguments": guarded[0][1],
+                                 "result": _summarise_call(guarded[0][0], guarded[0][1], data)})
+                session["pending"] = None
+                if data.get("status") == "ok":
+                    return _respond(session, "The front door is unlocked.", tool_log)
+                return _respond(session, "That didn't go through - the door is still locked.", tool_log)
+        if _is_decline(plain):
+            session["pending"] = None
+            return _respond(session, "Understood - nothing was changed.", tool_log)
+
+    # Canonical routine phrases plan deterministically - asking twice must
+    # always produce a plan to confirm, whatever the model feels like doing.
+    routine = _detect_routine(message)
+    if routine:
+        args = {"routine_name": routine, "confirm": False}
+        data, _ = await _call_tool("run_routine", args)
+        tool_log.append({"name": "run_routine", "arguments": args,
+                         "result": _summarise_call("run_routine", args, data)})
+        _track_pending(session, "run_routine", args, data)
+        steps = len(data.get("steps", []))
+        reply = (f"{data['summary']} Shall I go ahead?"
+                 if data.get("requires_confirmation") and steps
+                 else data.get("summary", "Done."))
+        # Keep the conversation coherent: later model turns must see this turn.
+        session["history"].append({"role": "user", "content": [{"text": message}]})
+        session["history"].append({"role": "assistant", "content": [{"text": reply}]})
+        if len(session["history"]) > MAX_HISTORY_MESSAGES:
+            session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
+        return _respond(session, reply, tool_log)
+
+    # Status questions: fetch the snapshot deterministically and hand the
+    # digest to the model to phrase. The tool call is always visible either way.
+    status_q = any(p in message.lower() for p in _STATUS_PHRASES)
+    if status_q:
+        snap, _ = await _call_tool("get_home_snapshot", {})
+        tool_log.append({"name": "get_home_snapshot", "arguments": {},
+                         "result": _summarise_call("get_home_snapshot", {}, snap)})
+        digest = snap.get("digest", {})
+        message = (f"{message}\n\n[system: fresh snapshot fetched. Relay this digest "
+                   f"per the briefing rules, do not re-fetch]\n"
+                   + json.dumps(digest, ensure_ascii=False))
 
     session["history"].append({"role": "user", "content": [{"text": message}]})
     if len(session["history"]) > MAX_HISTORY_MESSAGES:
@@ -416,17 +542,17 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         return _respond(session, f"{done} {kind}{'' if done == 1 else 's'} switched {action}{where}.", tool_log)
 
     # 6 - status
-    if any(k in plain for k in ("what's on", "what is on", "status", "running")):
+    if any(k in plain for k in ("what's on", "what is on", "status", "running",
+                                "happening", "house", "home", "quiet", "calm")) \
+            and "happened" not in plain:
         snap = await run("get_home_snapshot", {})
-        on = [d for d in snap.get("devices", [])
-              if d.get("power") and d["type"] in ("light", "tv", "ac", "fan", "shower")]
-        names = ", ".join(d["name"] for d in on[:3])
-        more = f" and {len(on) - 3} more" if len(on) > 3 else ""
+        digest = snap.get("digest", {})
+        obs = digest.get("observations", [])
+        reply = " ".join(obs) if obs else digest.get("headline", "All calm here.")
+        if digest.get("lines") and obs:
+            reply += " " + " ".join(digest["lines"][:2])
         alerts = snap.get("alerts", [])
-        n = len(on)
-        reply = (f"{n} thing{'s' if n != 1 else ''} {'are' if n != 1 else 'is'} on: {names}{more}."
-                 if on else "Nothing is running right now.")
-        if alerts:
+        if alerts and not obs:
             reply += f" Note: {alerts[0]['message']}."
         return _respond(session, reply, tool_log)
 

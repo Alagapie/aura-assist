@@ -36,10 +36,17 @@ def get_home_snapshot(room: str | None = None) -> dict:
     """
     Current state of the whole home, or a single room.
 
+    Returns raw device state plus a ready-made `digest`: grouped, prioritised
+    briefing lines (Security, Climate, Lights, Curtains) with `observations`
+    for verified facts worth surfacing. RELAY THE DIGEST - never enumerate
+    raw devices one by one.
+
     Args:
         room: Optional room filter - one of living, bedroom, kitchen, bathroom, hallway.
     """
-    return state.snapshot(room)
+    snap = state.snapshot(room)
+    snap["digest"] = state.digest(room)
+    return snap
 
 
 @mcp.tool()
@@ -133,10 +140,48 @@ def run_routine(routine_name: str, confirm: bool = False) -> dict:
     return _execute_routine(routine_name, state)
 
 
+def _digest(events: list[dict], cap: int = 12) -> dict:
+    """Collapse raw events into a short human summary.
+
+    A chatty diary (30 lock/unlock cycles from testing) must never again be
+    relayed line-by-line: repeats are counted, same-type devices are grouped
+    ("3 lights off"), and the raw list is capped.
+    """
+    from .devices import create_devices
+    types = {d["id"]: d["type"] for d in create_devices().values()}
+    groups: dict[tuple, dict] = {}
+    for e in events:
+        key = (e.get("device_id") or e.get("kind"), e.get("kind"))
+        g = groups.setdefault(key, {"label": e.get("device_id") or e["kind"],
+                                    "count": 0, "first_ts": e["ts"], "last_ts": e["ts"]})
+        g["count"] += 1
+        g["last_ts"] = e["ts"]
+
+    # Group chatty same-type devices (e.g. 5 separate lights) into one line.
+    buckets: dict[tuple, dict] = {}
+    for g in groups.values():
+        bkey = (types.get(g["label"], g["label"]), "churn" if g["count"] >= 3 else "once")
+        b = buckets.setdefault(bkey, {"count": 0, "items": [], "last_ts": ""})
+        b["count"] += 1
+        b["items"].append(g["label"])
+        b["last_ts"] = max(b["last_ts"], g["last_ts"])
+
+    lines = []
+    for (dtype, mode), b in sorted(buckets.items(), key=lambda kv: kv[1]["last_ts"], reverse=True):
+        noun = f"{b['count']} {dtype} devices" if b["count"] > 1 else b["items"][0]
+        if mode == "churn":
+            lines.append(f"{noun}: changed repeatedly (last {b['last_ts'][11:19]})")
+        else:
+            lines.append(f"{noun}: {b['count']} change{'s' if b['count'] != 1 else ''}")
+    return {"digest": lines[:8], "events": events[:cap],
+            "events_truncated": len(events) > cap}
+
+
 @mcp.tool()
 def get_recent_events(since_minutes: int = 480, room: str | None = None, kind: str | None = None) -> dict:
     """
     Recent home events - device changes, object sightings, routine runs, alerts.
+    Returns a digest (collapsed repeats) plus the most recent raw events.
 
     Args:
         since_minutes: How far back to look (default 8 hours).
@@ -144,7 +189,8 @@ def get_recent_events(since_minutes: int = 480, room: str | None = None, kind: s
         kind: Optional event kind - device_change, object_sighting, routine_run, mode_change, preference.
     """
     events = event_store.query_events(since_minutes, room, kind)
-    return {"count": len(events), "since_minutes": since_minutes, "events": events}
+    summary = _digest(events)
+    return {"count": len(events), "since_minutes": since_minutes, **summary}
 
 
 @mcp.tool()

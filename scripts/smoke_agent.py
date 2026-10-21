@@ -60,7 +60,14 @@ def main() -> int:
     r = post("/agent/invoke", {"message": "what's on?", "session_id": session})
     names = [c["name"] for c in r.get("tool_calls", [])]
     check("get_home_snapshot called", "get_home_snapshot" in names, ",".join(names))
-    check("reply <= 2 sentences", r["reply"].count(".") <= 3, r["reply"])
+    # The briefing contract: grouped digest lines (Security/Climate/Lights/
+    # Curtains), not a raw dump of all 33 devices. Allow the ~4 grouped lines
+    # plus a short headline, but not an unbounded wall of text.
+    reply = r["reply"]
+    grouped = any(k in reply for k in ("Security", "Climate", "Lights", "Curtains"))
+    check("reply is a grouped digest, not a wall", len(reply) <= 500 and reply.count(".") <= 7,
+          reply)
+    check("briefing uses digest categories", grouped or len(reply) < 80, reply)
 
     print("\n[3] bedtime: plan first, execute only after approval")
     r = post("/agent/invoke", {"message": "prepare for bed", "session_id": session})

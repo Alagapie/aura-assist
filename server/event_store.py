@@ -109,3 +109,12 @@ def find_object(object_name: str, since_minutes: int = 10080) -> list[dict]:
         if needle in str(detail.get("object", "")).lower():
             hits.append({"ts": r["ts"], "room": r["room"], **detail})
     return hits
+
+
+def clear() -> int:
+    """Wipe the diary - used by /state/reset so tests and demo takes start clean."""
+    with _lock:
+        count = _db().execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+        _db().execute("DELETE FROM events")
+        _db().commit()
+    return count

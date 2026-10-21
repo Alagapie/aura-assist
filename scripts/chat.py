@@ -12,8 +12,17 @@ on :8000. The tool log shows exactly what the agent did on your behalf.
 """
 
 import json
+import sys
 import urllib.error
 import urllib.request
+
+# Windows consoles default to cp1252, which crashes on UTF-8 arrows/quotes
+# the model may emit. Force UTF-8 and degrade rather than raise.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 BASE = "http://localhost:8000"
 SESSION = "terminal-chat"
