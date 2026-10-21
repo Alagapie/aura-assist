@@ -217,6 +217,13 @@ def find_object(object_name: str, since_minutes: int = 10080) -> dict:
     }
 
 
+# How many objects to hand back to the model. The VLM may see a dozen things;
+# reading them all aloud is not what a spoken assistant does. The full list is
+# still recorded as sightings (so find_object sees everything) - this only caps
+# what the reply is built from.
+_SPOKEN_OBJECT_LIMIT = 5
+
+
 @mcp.tool()
 def describe_scene(camera_id: str) -> dict:
     """
@@ -225,7 +232,27 @@ def describe_scene(camera_id: str) -> dict:
     Args:
         camera_id: Room the camera covers - e.g. "kitchen", "living".
     """
-    return _describe_scene(camera_id)
+    scene = _describe_scene(camera_id)
+    if "error" in scene:
+        return scene
+
+    # Keep only the most confident objects for the reply, but leave the raw list
+    # intact under `all_objects` so nothing is lost for the sighting memory.
+    ranked = sorted(scene.get("objects", []), key=lambda o: o.get("confidence", 0), reverse=True)
+    top = ranked[:_SPOKEN_OBJECT_LIMIT]
+
+    spoken = scene.get("summary", "")
+    hazards = scene.get("hazards", [])
+    if hazards:
+        spoken = f"{spoken} Safety: {hazards[0].get('label', 'something unsafe')}."
+
+    return {
+        **scene,
+        "objects": top,
+        "all_objects": scene.get("objects", []),
+        "object_count": len(scene.get("objects", [])),
+        "spoken": spoken,
+    }
 
 
 @mcp.tool()

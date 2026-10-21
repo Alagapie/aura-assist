@@ -13,6 +13,7 @@ plain HTTP conveniences for the 3D simulator bridge:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from contextlib import asynccontextmanager
@@ -24,7 +25,7 @@ from fastapi.responses import StreamingResponse
 
 load_dotenv()  # reads .env: AWS creds, AURA_USE_BEDROCK, model ids
 
-from . import agent
+from . import agent, vision
 from .home_state import state
 from .mcp_tools import mcp
 
@@ -86,6 +87,7 @@ async def index() -> dict:
             "GET  /events/state": "SSE stream of home-state snapshots",
             "POST /state/patch": "direct device patch (3D simulator bridge)",
             "POST /state/reset": "restore the default scene",
+            "POST /vision/describe": "describe a camera frame {camera_id, image_base64} via the VLM",
             "POST /mcp": "MCP Streamable HTTP endpoint (what clients connect to)",
         },
         "try": "python scripts/chat.py  -  talk to the agent in your terminal",
@@ -160,6 +162,46 @@ async def patch(payload: dict) -> dict:
     if device is None:
         return {"error": f"unknown device '{payload.get('device_id')}'"}
     return {"status": "ok", "state": device}
+
+
+@app.post("/vision/describe")
+async def vision_describe(payload: dict) -> dict:
+    """
+    Describe a camera frame captured by the 3D simulator.
+
+    The browser posts the frame it just rendered from the 3D scene, so the VLM
+    is looking at the *same* house the user sees. Body:
+
+        {"camera_id": "kitchen", "image_base64": "<jpeg>", "mime": "image/jpeg"}
+
+    The reply is the same normalised shape `describe_scene` returns, and every
+    object seen is also stored as a sighting so `find_object` can use it.
+    """
+    camera_id = (payload.get("camera_id") or "").strip()
+    if not camera_id:
+        return {"error": "camera_id is required"}
+
+    b64 = payload.get("image_base64") or ""
+    frame: bytes | None = None
+    if b64:
+        try:
+            frame = base64.b64decode(b64, validate=False)
+        except (ValueError, TypeError):
+            return {"error": "image_base64 is not valid base64"}
+
+    if frame:
+        # Remember it, so a later describe_scene(camera_id) - e.g. the agent's
+        # MCP call when you ask "what's in the kitchen?" - analyses this exact
+        # frame instead of falling back to the mock scene.
+        vision.remember_frame(camera_id, frame)
+
+    result = vision.describe_scene(
+        camera_id,
+        image_bytes=frame,
+        mime=payload.get("mime", "image/jpeg"),
+    )
+    return result
+
 
 
 # Streamable HTTP transport for MCP clients (Alexa+ simulator, web client).

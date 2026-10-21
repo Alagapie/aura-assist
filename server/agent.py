@@ -71,7 +71,9 @@ FIRST; only call again with confirm=true after the user explicitly approves.
 already groups the changes - relay it in exactly ONE sentence covering at most \
 3 facts. Never list items one by one.
 - "where are my keys/wallet/phone" -> find_object
-- "what do you see / what's in the kitchen" -> describe_scene
+- "what do you see / what's in the kitchen" -> describe_scene. Its result has a \
+`spoken` field - relay that, do not list the objects one by one. Mention at most \
+3 objects, then stop. If it reports a hazard, add one concrete next step.
 - Accessibility or privacy preferences -> set_user_preference
 
 SAFETY - hard rules, no exceptions:
