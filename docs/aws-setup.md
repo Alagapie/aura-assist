@@ -9,16 +9,14 @@ cheapest Bedrock model; ~$0.06 per 1M input tokens).
 If you don't have one: https://aws.amazon.com → **Create an AWS account**
 (credit card required; free tier does not cover Bedrock, but demo usage is pennies).
 
-## 2. Enable model access
+## 2. Model access - no action needed (as of Oct 2026)
 
-Bedrock models are off until you switch them on:
+AWS **retired the "Model access" page**: serverless foundation models
+(including Nova Lite) are now **automatically enabled on first use** in all
+commercial regions. Your very first `check_bedrock.py` call enables it.
+No console clicking required.
 
-1. Console → **Amazon Bedrock** → left sidebar → **Model access** (under
-   *Bedrock Settings*)
-2. Region must be one with Nova Lite, e.g. **us-east-1** (top-right switcher)
-3. Click **Enable specific models** → tick **Amazon Nova Lite** → **Apply**
-
-Approval is usually instant for Nova models.
+(IAM can still block you - that's the next step, not a model toggle.)
 
 ## 3. Create an IAM user (never use root keys)
 
@@ -75,7 +73,7 @@ python scripts/smoke_agent.py
 | Symptom | Fix |
 |---|---|
 | `UnrecognizedClientException` / `InvalidClientTokenId` | Wrong/expired access key ID or secret |
-| `AccessDeniedException` on InvokeModel | IAM policy missing, or model not enabled in step 2 |
+| `AccessDeniedException` on InvokeModel | IAM policy missing (models auto-enable now - no console toggle) |
 | `ResourceNotFoundException: model id` | Wrong region or model id — check `AWS_REGION` and `AURA_AGENT_MODEL` |
 | `expired-token` | You pasted an STS/console-session token; use the IAM user's long-term key |
 | `/health` still says `mock` | `.env` not in the `aura-assist` folder, or server not restarted |

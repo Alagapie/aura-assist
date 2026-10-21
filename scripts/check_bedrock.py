@@ -55,7 +55,7 @@ except Exception as exc:
     print(f"\nFAIL: {type(exc).__name__}: {exc}")
     print("\nHints:")
     print("  UnrecognizedClientException / InvalidClientTokenId -> bad key pair")
-    print("  AccessDeniedException -> IAM policy or model access not enabled")
+    print("  AccessDeniedException -> IAM policy missing (model access is auto-on)")
     print("  ResourceNotFoundException -> wrong region or model id")
     print("  Full guide: docs/aws-setup.md")
     sys.exit(1)
