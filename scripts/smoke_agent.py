@@ -53,7 +53,8 @@ def main() -> int:
     print("\n[1] greeting is terse and mentions capabilities")
     r = post("/agent/invoke", {"message": "hello", "session_id": session})
     check("greeting replies", bool(r.get("reply")), r.get("reply", ""))
-    check("engine is mock", r.get("engine") == "mock", str(r.get("engine")))
+    check("engine reported", r.get("engine", "").split()[0] in ("mock", "bedrock"),
+          str(r.get("engine")))
 
     print("\n[2] status request produces a visible tool_calls log")
     r = post("/agent/invoke", {"message": "what's on?", "session_id": session})
@@ -105,8 +106,15 @@ def main() -> int:
 
     print("\n[7] unknown input degrades honestly")
     r = post("/agent/invoke", {"message": "zzggbll", "session_id": session})
-    check("fallback apology", "sorry" in r["reply"].lower() or "didn't" in r["reply"].lower(),
-          r["reply"])
+    # Honest degradation = no state change + no fake success. Mock apologises;
+    # Bedrock may safely re-ask about the pending plan - both acceptable.
+    mutating = [c for c in r.get("tool_calls", [])
+                if c["name"] in ("control_device", "run_routine")
+                and ("applied" in c["result"]
+                     or c["arguments"].get("action") == "unlock" and c["arguments"].get("confirm"))]
+    fake_success = any(k in r["reply"].lower() for k in ("done.", "complete.", "has been", "turned off"))
+    check("garbage input causes no mutation and no fake success",
+          not mutating and not fake_success, r["reply"][:80])
 
     print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
     if FAILED:

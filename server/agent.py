@@ -48,14 +48,19 @@ FIRST; only call again with confirm=true after the user explicitly approves.
 - Accessibility or privacy preferences -> set_user_preference
 
 SAFETY - hard rules, no exceptions:
-- Unlocking is security-sensitive. The tool refuses unlock without confirm=true, \
-and you must ask the user and receive a clear yes ("yes", "do it", "go ahead") \
-before ever passing confirm=true.
-- run_routine with confirm=true ONLY after you read the plan back and the user \
-approved it. Ambiguous replies mean: ask again, do not act.
+- Unlocking is security-sensitive. To request it you MUST first call \
+control_device with action=unlock and confirm=false (the tool's refusal IS the \
+formal confirmation request - relay its message to the user). Never just ask in \
+text without calling the tool: the home state must record the pending request. \
+Only after the user says a clear yes may you call it again with confirm=true.
+- run_routine: call with confirm=false FIRST (the plan it returns is what you \
+read back). Only call again with confirm=true after the user approves.
+- Ambiguous replies mean: ask again, do not act.
 - You never infer who is home, anyone's health, or routines not requested.
 - If a scene description mentions a hazard, state it plainly and offer one \
 concrete next step. Do not dramatize.
+- Output ONLY the spoken reply. No <thinking> tags, no reasoning, no reasoning \
+blocks - just the final answer text.
 
 CONVERSATION: remember what the user confirmed or declined earlier in the \
 session. If they decline an action, do not re-propose it unprompted.\
@@ -191,16 +196,30 @@ def _bedrock_tools() -> list[dict]:
 
 # Populated at startup from the MCP tool registry (see refresh_tool_specs).
 _STATIC_TOOLS: list[dict] = []
+_DEVICE_INDEX: str = ""
 
 
 def refresh_tool_specs() -> None:
-    """Snapshot the live MCP tool registry into Bedrock Converse toolSpecs."""
-    global _STATIC_TOOLS
+    """Snapshot the live MCP tool registry into Bedrock Converse toolSpecs,
+    plus build the device index the model uses to avoid inventing ids."""
+    global _STATIC_TOOLS, _DEVICE_INDEX
     _STATIC_TOOLS = [
         {"toolSpec": {"name": t.name, "description": t.description or "",
                       "inputSchema": {"json": t.parameters}}}
         for t in mcp._tool_manager.list_tools()
     ]
+    from .devices import create_devices
+    _DEVICE_INDEX = "\n".join(
+        f"- {d['id']} ({d['type']}, {d['room']}): {d['name']}"
+        for d in create_devices().values()
+    )
+
+
+def _system_prompt() -> str:
+    """System prompt + the exact device ids (grounding: models must not invent ids)."""
+    return (SYSTEM_PROMPT
+            + "\n\nEXACT DEVICE IDS - use these ids verbatim, never invent your own:\n"
+            + _DEVICE_INDEX)
 
 
 async def invoke_bedrock(message: str, session_id: str) -> dict:
@@ -217,7 +236,7 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.converse(
             modelId=model,
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": _system_prompt()}],
             messages=session["history"],
             toolConfig={"tools": _bedrock_tools()},
             inferenceConfig={"maxTokens": 400, "temperature": 0.2},
@@ -417,11 +436,21 @@ async def invoke_mock(message: str, session_id: str) -> dict:
 
 # ------------------------------------------------------------------ entry ---
 
+_THINKING = re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(reply: str) -> str:
+    """Remove any reasoning tags a model leaks through, collapse blank runs."""
+    cleaned = _THINKING.sub("", reply or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _respond(session: dict, reply: str, tool_log: list[dict]) -> dict:
     session["turns"] += 1
     pending = session.get("pending")
     return {
-        "reply": reply or "Done.",
+        "reply": _strip_reasoning(reply) or "Done.",
         "tool_calls": tool_log,
         "needs_user_input": bool(pending),
         "pending": (f"Confirm: {pending['name'].replace('_', ' ')}" if pending and pending["type"] == "routine"
