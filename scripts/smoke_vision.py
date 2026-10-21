@@ -90,6 +90,8 @@ def main() -> int:
     # --- frame cache (offline: Bedrock is off, so it still resolves to mock) --
     vision.remember_frame("living", b"\xff\xd8\xfffake-jpeg")
     check("frame is cached per camera", vision._last_frame.get("living") == b"\xff\xd8\xfffake-jpeg")
+    vision.forget_frames()
+    check("forget_frames clears the cache", vision._last_frame == {})
 
     print("----------------------------------------------------")
     print(f"{passed} passed, {failed} failed")

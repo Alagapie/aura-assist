@@ -114,6 +114,7 @@ async def get_state() -> dict:
 async def state_reset() -> dict:
     """Restore the default scene (used by tests and between demo takes)."""
     state.reset()
+    vision.forget_frames()
     return {"status": "ok", "devices": len(state.snapshot()["devices"])}
 
 

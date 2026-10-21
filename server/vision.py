@@ -257,6 +257,15 @@ def remember_frame(camera_id: str, image_bytes: bytes) -> None:
         _last_frame[camera_id] = image_bytes
 
 
+def forget_frames() -> None:
+    """
+    Drop every cached frame. Called on /state/reset so a test run, or a fresh
+    demo take, starts from the deterministic mock instead of whatever frame the
+    simulator happened to post last.
+    """
+    _last_frame.clear()
+
+
 def describe_scene(camera_id: str, image_path: str | None = None,
                    image_bytes: bytes | None = None, mime: str = "image/jpeg") -> dict:
     """
