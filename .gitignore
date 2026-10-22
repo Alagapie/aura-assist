@@ -1,18 +1,45 @@
-# Secrets
+# Environment files (contains secrets)
 .env
+.env.local
+.env.*.local
+*.env
 
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
-.venv/
-venv/
+*$py.class
+*.so
 
-# Runtime data (SQLite event store)
-data/
-*.db
-*.sqlite3
+# Database (can be regenerated)
+data/*.db
+data/*.sqlite
+data/*.bak
 
-# Editors / OS
-.vscode/
+# IDE
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
 Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+build/
+dist/
+
+# Test coverage
+coverage/
+htmlcov/
+
+# Environment-specific files
+.env.development
+.env.staging
+.env.production
+.env.example

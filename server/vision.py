@@ -15,6 +15,7 @@ sees it, so the tool contract, the sighting memory and the tests are unchanged.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -219,8 +220,8 @@ def _normalise(raw: dict, camera_id: str) -> dict | None:
 
     objects = clean_items("objects")
     hazards = clean_items("hazards")
-    if not objects and not hazards:
-        # Nothing usable - better to say so than to record an empty sighting.
+    if not isinstance(raw.get("objects"), list) and not isinstance(raw.get("hazards"), list):
+        # Missing fields are malformed; explicit empty lists are a valid clear scene.
         return None
 
     try:
@@ -266,6 +267,7 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
 
     try:
         import boto3
+        from botocore.config import Config
     except ImportError:
         log.warning("AURA_USE_BEDROCK=1 but boto3 is not installed; using mock vision")
         return None
@@ -277,6 +279,11 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
         client = boto3.client(
             "bedrock-runtime",
             region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            config=Config(
+                connect_timeout=float(os.environ.get("AURA_VISION_CONNECT_TIMEOUT", "5")),
+                read_timeout=float(os.environ.get("AURA_VISION_READ_TIMEOUT", "18")),
+                retries={"max_attempts": 1},
+            ),
         )
         response = client.converse(
             modelId=model_id,
@@ -312,11 +319,16 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
 # room instead of the canned mock. Kept tiny and in-memory on purpose - it is a
 # demo convenience, not a recording archive.
 _last_frame: dict[str, bytes] = {}
+_last_result: dict[str, tuple[str, dict]] = {}
 
 
 def remember_frame(camera_id: str, image_bytes: bytes) -> None:
     """Cache a frame the simulator captured, for the next describe_scene call."""
     if camera_id and image_bytes:
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        cached = _last_result.get(camera_id)
+        if cached and cached[0] != digest:
+            _last_result.pop(camera_id, None)
         _last_frame[camera_id] = image_bytes
 
 
@@ -327,6 +339,7 @@ def forget_frames() -> None:
     simulator happened to post last.
     """
     _last_frame.clear()
+    _last_result.clear()
 
 
 def describe_scene(camera_id: str, image_path: str | None = None,
@@ -349,10 +362,29 @@ def describe_scene(camera_id: str, image_path: str | None = None,
         # real scene instead of the canned mock.
         frame = _last_frame.get(camera_id)
 
-    result = _bedrock_describe(camera_id, frame, mime) if frame else None
-    source = "bedrock" if result else "mock"
+    frame_digest = hashlib.sha256(frame).hexdigest() if frame else None
+    cached = _last_result.get(camera_id)
+    if frame_digest and cached and cached[0] == frame_digest:
+        return cached[1]
 
-    if result is None:
+    bedrock_enabled = os.environ.get("AURA_USE_BEDROCK") == "1"
+    source = "mock"
+    result = None
+
+    if frame and bedrock_enabled:
+        result = _bedrock_describe(camera_id, frame, mime)
+        if result is None:
+            # A frame *was* captured but the model could not read it. Never
+            # replace a failed real inference with the simulated scene - that
+            # would be a fabricated fact dressed up as a camera reading.
+            return {"error": "vision_model_unavailable", "message": "The camera frame could not be analyzed.",
+                    "source": "bedrock_error", "camera_id": camera_id}
+        source = "bedrock"
+    else:
+        # No live frame for this camera (the simulator has not looked here yet,
+        # or the camera has no feed of its own - the fridge, for example).
+        # Fall back to the simulated scene, which describes the same house the
+        # 3D simulator renders, so the answer is still true for the simulation.
         result = _MOCK_SCENES.get(camera_id)
         if result is None and camera_id in _KNOWN_ROOMS:
             # A room without a hand-written scene still gets an honest, empty
@@ -379,4 +411,8 @@ def describe_scene(camera_id: str, image_path: str | None = None,
             camera_id=camera_id,
         )
 
-    return {**result, "source": source, "camera_id": camera_id}
+    response = {**result, "source": source, "camera_id": camera_id,
+                "simulated": source == "mock"}
+    if frame_digest:
+        _last_result[camera_id] = (frame_digest, response)
+    return response

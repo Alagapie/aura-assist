@@ -1,4 +1,4 @@
-"""
+﻿"""
 The AuraAssist agent: natural language -> MCP tool calls -> spoken reply.
 
 Two interchangeable engines, same contract:
@@ -180,9 +180,9 @@ async def _call_tool(name: str, arguments: dict) -> tuple[dict, str]:
 def _summarise_call(name: str, arguments: dict, data: dict) -> str:
     """One line for the on-screen tool-call log (the judging artifact)."""
     if "error" in data:
-        return f"{name} → {data['error']}"
+        return f"{name} â†’ {data['error']}"
     if name == "control_device" and "before" in data:
-        return f"{data.get('name', arguments.get('device_id'))}: {data['before']} → {data['after']}"
+        return f"{data.get('name', arguments.get('device_id'))}: {data['before']} â†’ {data['after']}"
     if name == "run_routine":
         if "steps" in data:
             return f"{name}({arguments.get('routine_name')}) planned {len(data['steps'])} steps"
@@ -344,6 +344,56 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
             session["history"] = session["history"][-MAX_HISTORY_MESSAGES:]
         return _respond(session, reply, tool_log)
 
+    # Resolve item-location requests in code before the LLM. This keeps voice
+    # queries grounded in sighting memory and the current camera view.
+    location_query = bool(re.search(r"\b(?:where (?:is|are)|find|locate|lost)\b", message.lower()))
+    if location_query:
+        item_text = re.sub(r".*?\b(?:where (?:is|are)|find(?: my)?|locate|lost(?: my)?)\b", "", message.lower()).strip()
+        surface_query = bool(re.search(r"\b(?:table|desk|stand|shelf|counter)\b", item_text))
+        item = re.sub(r"\b(?:on|at|in|near|by|the|my|a|an|table|coffee|desk|stand|shelf|counter|located|location|where|is|are|it)\b", " ", item_text)
+        item = re.sub(r"\s+", " ", item).strip(" ?.,!'’") or "it"
+        memory, _ = await _call_tool("find_object", {"object_name": item})
+        tool_log.append({"name": "find_object", "arguments": {"object_name": item},
+                         "result": _summarise_call("find_object", {"object_name": item}, memory)})
+        if memory.get("found") and not surface_query:
+            return _respond(session, memory.get("spoken", "I found a recent sighting."), tool_log)
+        # If memory has no usable sighting, search current room frames. Surface
+        # requests stay in the named room (or living room); phones are common in
+        # living/bedroom scenes, while other items get a small room sweep.
+        vision_failures = []
+        if surface_query or not memory.get("found"):
+            hinted_room = _find_room(message)
+            if hinted_room:
+                rooms = [hinted_room]
+            elif surface_query:
+                rooms = ["living"]
+            elif item.lower() in ("phone", "wallet", "glasses"):
+                rooms = ["living", "bedroom", "kitchen"]
+            elif item.lower() in ("keys", "key"):
+                rooms = ["kitchen", "living", "bedroom"]
+            else:
+                rooms = ["living", "kitchen", "bedroom"]
+            for room in rooms:
+                scene, _ = await _call_tool("describe_scene", {"camera_id": room})
+                tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room},
+                                 "result": _summarise_call("describe_scene", {"camera_id": room}, scene)})
+                if "error" in scene:
+                    vision_failures.append(scene.get("message", "camera unavailable"))
+                    continue
+                matches = [o for o in scene.get("objects", [])
+                           if item.lower() in o.get("label", "").lower()
+                           and (not surface_query or any(s in o.get("location", "").lower()
+                                                          for s in ("table", "desk", "stand", "shelf", "counter")))]
+                if matches:
+                    found = matches[0]
+                    return _respond(session, f"I can see your {found['label']} {found.get('location', 'in the room')}.", tool_log)
+        if memory.get("found"):
+            return _respond(session, memory.get("spoken", "I found a recent sighting."), tool_log)
+        if vision_failures:
+            return _respond(session, f"I couldn't verify the camera views just now, and I have no recent sighting of your {item}.", tool_log)
+        if surface_query:
+            return _respond(session, f"I couldn't find your {item} on a visible surface or in recent sightings.", tool_log)
+        return _respond(session, f"I couldn't find a recent sighting of your {item}.", tool_log)
     # Fridge-content questions: call describe_scene("fridge") for accurate inventory
     fridge_q = re.search(r"\b(what'?s|what is|show me|check|open|inside|in|contents? of)\b.*\b(fridge|refrigerator|freezer)\b"
                          r"|\b(fridge|refrigerator|freezer)\b.*\b(content|inside|have|got|contain)", message.lower())
@@ -351,6 +401,8 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         data, _ = await _call_tool("describe_scene", {"camera_id": "fridge"})
         tool_log.append({"name": "describe_scene", "arguments": {"camera_id": "fridge"},
                          "result": _summarise_call("describe_scene", {"camera_id": "fridge"}, data)})
+        if "error" in data:
+            return _respond(session, "I couldn't inspect the fridge camera just now.", tool_log)
         if data.get("objects"):
             inv = "; ".join([f"{o['label']} {o.get('location', '')}".strip() for o in data["objects"]])
             message = (f"{message}\n\n[system: FRIDGE INVENTORY from describe_scene(fridge) - "
@@ -359,7 +411,7 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
             message = f"{message}\n\n[system: Fridge appears empty or camera unavailable.]"
 
     # Table/surface questions: force fresh vision for accuracy
-    table_match = re.search(r"what'?s on (?:the )?(.+?)(?:table|stand|desk|shelf|counter|surface)", message.lower())
+    table_match = re.search(r"\bwhat(?:'s| is) on (?:the )?(.+?\b(?:coffee\s+table|table|stand|desk|shelf|counter|surface))\b", message.lower())
     if table_match:
         room_hint = session.get("room") or "living"
         # Try to infer room from context
@@ -370,12 +422,15 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         data, _ = await _call_tool("describe_scene", {"camera_id": room_hint})
         tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room_hint},
                          "result": _summarise_call("describe_scene", {"camera_id": room_hint}, data)})
+        if "error" in data:
+            return _respond(session, f"I couldn't inspect the {room_hint} camera just now.", tool_log)
         if data.get("objects"):
             surface_hint = table_match.group(1).strip() if table_match else ""
+            surface_hint = re.sub(r"^(?:the|my|this|that)\s+", "", surface_hint)
             all_objs = data["objects"]
             # Filter to objects on/near the mentioned surface if possible
             on_surface = [o for o in all_objs if surface_hint and surface_hint in o.get("location", "").lower()]
-            objs_to_show = on_surface if on_surface else all_objs
+            objs_to_show = on_surface
             message = (f"{message}\n\n[system: VISION EVIDENCE from describe_scene({room_hint}) - "
                        f"use THESE exact observations, do NOT guess. Objects on/near surface: "
                        + "; ".join([f"{o['label']} at {o.get('location','unknown')}" for o in objs_to_show])
@@ -528,9 +583,31 @@ async def invoke_mock(message: str, session_id: str) -> dict:
 
     # 4 - memory / vision / events
     if any(k in plain for k in ("where are", "where is", "find my", "lost")):
-        obj = re.sub(r".*\b(?:where (?:are|is)|find my|lost my)\b", "", plain).strip() or "it"
-        data = await run("find_object", {"object_name": obj})
-        return _respond(session, data.get("spoken", data.get("message", "No sighting of that in the last week.")), tool_log)
+        obj = re.sub(r".*?\b(?:where (?:are|is)|find my|lost(?: my)?)\b", "", plain).strip() or "it"
+        # Users often include a surface or conversational filler in the item name
+        # ("my table phone", "the phone's location"). Memory stores just "phone".
+        obj = re.sub(r"^(?:my|the|a|an)\s+", "", obj)
+        surface_query = bool(re.search(r"\b(?:table|coffee table|desk|stand|shelf|counter)\b", obj))
+        item = re.sub(r"\b(?:on|at|in|near|by|the|my|table|coffee|desk|stand|shelf|counter|located|location|where|is|are|it)\b", " ", obj)
+        item = re.sub(r"\s+", " ", item).strip(" ?.,!'’") or "it"
+        data = await run("find_object", {"object_name": item})
+        if data.get("found"):
+            return _respond(session, data.get("spoken", "I found a recent sighting."), tool_log)
+        # A table-specific request can use the current living-room view when
+        # event memory has no matching sighting. Report only what the camera sees.
+        if surface_query:
+            room = _find_room(text) or "living"
+            scene = await run("describe_scene", {"camera_id": room})
+            if "error" not in scene:
+                matches = [o for o in scene.get("objects", [])
+                           if item.lower() in o.get("label", "").lower()
+                           and any(s in o.get("location", "").lower()
+                                   for s in ("table", "desk", "stand", "shelf", "counter"))]
+                if matches:
+                    found = matches[0]
+                    return _respond(session, f"I can see your {found['label']} {found.get('location', 'in the room')}.", tool_log)
+                return _respond(session, f"I couldn't find a {item} on a surface in the {room} just now, and there is no recent sighting in memory.", tool_log)
+        return _respond(session, data.get("message", f"No recent sighting of '{item}'."), tool_log)
     if any(k in plain for k in ("what changed", "what happened", "today", "recent")):
         data = await run("get_recent_events", {"since_minutes": 720})
         count = data.get("count", 0)
