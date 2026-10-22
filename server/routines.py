@@ -183,44 +183,149 @@ def _describe_step(device: dict, patch: dict) -> str:
     return f"Update the {device['name']}"
 
 
-def _plan_summary(name: str, planned: list[dict], exceptions: list[str]) -> str:
-    """Generate Alexa-like conversational summary for a routine."""
-    if not planned and not exceptions:
-        return "Everything's already set just like that."
+def _format_action_list(planned: list[dict]) -> str:
+    """Format planned actions as a natural language list."""
+    if not planned:
+        return ""
     
-    # Build a more natural Alexa-style response
+    # Group by category
+    lights = []
+    locks = []
+    thermostats = []
+    tvs = []
+    devices = []
+    
+    for step in planned:
+        description = step.get('description', '').strip()
+        if not description:
+            continue
+            
+        if 'Lock' in description:
+            # Extract device name
+            parts = description.split()
+            device_name = ' '.join(parts[2:]) if len(parts) > 2 else description
+            locks.append(device_name)
+        elif 'Set the' in description and 'AC' in description:
+            thermostats.append(description)
+        elif 'Switch the TV' in description or 'turn the TV' in description.lower():
+            tvs.append(description)
+        elif 'Turn off the' in description or 'Turn on the' in description:
+            parts = description.split()
+            if len(parts) > 3:
+                device_name = ' '.join(parts[2:])
+                if 'light' in device_name.lower():
+                    lights.append(device_name)
+                else:
+                    devices.append(description)
+            else:
+                devices.append(description)
+        elif 'Open' in description or 'Close' in description:
+            devices.append(description)
+        else:
+            devices.append(description)
+    
+    # Build readable action list
     parts = []
     
+    if thermostats:
+        for t in thermostats:
+            parts.append(f"  • {t}")
+    
+    if lights:
+        if len(lights) == 1:
+            parts.append(f"  • Turn off {lights[0]}")
+        else:
+            parts.append(f"  • Turn off {len(lights)} lights")
+    
+    if locks:
+        if len(locks) == 1:
+            parts.append(f"  • Lock {locks[0]}")
+        else:
+            parts.append(f"  • Lock {len(locks)} doors")
+    
+    if tvs:
+        for t in tvs:
+            parts.append(f"  • {t}")
+    
+    if devices:
+        for d in devices[:2]:
+            parts.append(f"  • {d}")
+    
+    if len(planned) > 5:
+        extra = len(planned) - len(parts)
+        parts.append(f"  • And {extra} more adjustments")
+    
+    return "\n".join(parts) if parts else ""
+
+
+def _plan_summary(name: str, planned: list[dict], exceptions: list[str]) -> dict:
+    """Generate Alexa-like conversational summary for a routine with detailed action preview.
+    
+    Returns both the spoken summary and the detailed action list for the UI to show.
+    """
+    if not planned and not exceptions:
+        return {
+            "spoken": "Everything's already set just like that.",
+            "actions": [],
+            "needs_confirmation": False,
+        }
+    
+    spoken_parts = []
+    
     if exceptions:
-        # For exceptions, use a calm, conversational tone
         exception_text = "; ".join(exceptions)
-        parts.append(f"By the way, {exception_text.lower()}.")
+        spoken_parts.append(f"By the way, {exception_text.lower()}.")
     
     if planned:
-        # Count device-type changes rather than raw step count
-        device_types = {}
-        for step in planned:
-            description = step.get('description', '')
-            # Extract device type from description
-            for dtype in ['light', 'door', 'thermostat', 'fan', 'curtains', 'lock']:
-                if dtype in description.lower():
-                    device_types[dtype] = device_types.get(dtype, 0) + 1
-                    break
-            else:
-                device_types['other'] = device_types.get('other', 0) + 1
+        action_count = len(planned)
         
-        # Build natural language description of changes
-        change_count = len(planned)
-        if change_count == 1:
-            device_type = list(device_types.keys())[0] if device_types else 'thing'
-            parts.append(f"I can make one {device_type} adjustment for you.")
-        elif change_count <= 3:
-            parts.append(f"I can adjust {change_count} things for you.")
+        # Build readable action preview using the format function
+        action_list = _format_action_list(planned)
+        
+        # Describe in natural language
+        lights_count = sum(1 for a in planned if 'light' in a.get('description', '').lower())
+        locks_count = sum(1 for a in planned if 'lock' in a.get('description', '').lower())
+        thermostats_count = sum(1 for a in planned if 'thermostat' in a.get('description', '').lower())
+        tvs_count = sum(1 for a in planned if 'tv' in a.get('description', '').lower())
+        devices_count = action_count - lights_count - locks_count - thermostats_count - tvs_count
+        
+        # Build spoken summary based on action count
+        if action_count <= 3:
+            spoken_parts.append(f"I've prepared {action_count} actions for {name.replace('_', ' ')}.")
+        elif action_count <= 6:
+            spoken_parts.append(f"I've prepared {action_count} actions for {name.replace('_', ' ')}.")
+            spoken_parts.append("Here's what I'm going to do:")
         else:
-            parts.append(f"I can update {change_count} settings for you.")
+            spoken_parts.append(f"I've prepared {action_count} actions to get everything ready.")
+            spoken_parts.append("Here's the plan:")
+        
+        # Add category summaries if action list is too long
+        if action_count > 6:
+            category_parts = []
+            if lights_count > 0:
+                category_parts.append(f"{lights_count} lights")
+            if locks_count > 0:
+                category_parts.append(f"{locks_count} doors/locks")
+            if thermostats_count > 0:
+                category_parts.append(f"{thermostats_count} thermostats")
+            if tvs_count > 0:
+                category_parts.append(f"{tvs_count} devices")
+            if devices_count > 0:
+                category_parts.append(f"{devices_count} other settings")
+            
+            if category_parts:
+                spoken_parts.append(f"- {', '.join(category_parts)}.")
+        
+        spoken_parts.append("Shall I proceed?")
     
-    result = ". ".join(parts) if parts else "I can help with that."
-    return result + " Shall I go ahead?"
+    spoken = " ".join(spoken_parts)
+    
+    return {
+        "spoken": spoken,
+        "actions": planned,
+        "action_list": _format_action_list(planned),
+        "needs_confirmation": len(planned) > 0,
+    }
 
 
 def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
@@ -245,24 +350,32 @@ def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
     failed_count = len(failed)
     
     if applied_count == 0 and failed_count == 0:
-        summary_text = "Everything's already just like that."
+        summary_text = "Everything's already set just like that."
+        spoken_summary = summary_text
     else:
         # Build natural language description
         parts = []
+        spoken_parts = []
+        
         if applied_count == 1:
-            # Extract just the result from the first applied step
             if applied:
+                # Extract just the result from the first applied step
                 result = applied[0].split(':')[-1].strip() if ':' in applied[0] else applied[0]
                 parts.append(f"Done. {result}.")
+                spoken_parts.append(f"Done! {result}")
         elif applied_count <= 3:
             parts.append(f"Done. I've updated {applied_count} settings for you.")
+            spoken_parts.append(f"Done! I've updated {applied_count} settings for you.")
         else:
             parts.append(f"Done. {applied_count} things updated successfully.")
+            spoken_parts.append(f"Done! {applied_count} things updated successfully.")
         
         if failed_count > 0:
             parts.append(f"{failed_count} steps didn't go through.")
+            spoken_parts.append(f"But don't worry - {failed_count} steps didn't go through.")
         
         summary_text = " ".join(parts)
+        spoken_summary = " ".join(spoken_parts)
     
     result = {
         "routine": name,
@@ -270,6 +383,7 @@ def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
         "skipped": failed,
         "exceptions": plan["exceptions"],
         "summary": summary_text,
+        "spoken_summary": spoken_summary,
     }
     event_store.record_event(kind="routine_run", source=source,
                              detail={"routine": name, "applied": len(applied), "failed": len(failed)})

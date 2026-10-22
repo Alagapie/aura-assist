@@ -333,10 +333,19 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         tool_log.append({"name": "run_routine", "arguments": args,
                          "result": _summarise_call("run_routine", args, data)})
         _track_pending(session, "run_routine", args, data)
-        steps = len(data.get("steps", []))
-        reply = (f"{data['summary']} Shall I go ahead?"
-                 if data.get("requires_confirmation") and steps
-                 else data.get("summary", "Done."))
+        
+        # Support both old (summary) and new (spoken, actions) response formats
+        if isinstance(data.get("summary"), dict):
+            # New format: {spoken, actions, needs_confirmation}
+            summary_data = data["summary"]
+            reply = summary_data.get("spoken", data.get("summary", "Done."))
+        else:
+            # Old format: plain string
+            steps = len(data.get("steps", []))
+            reply = (f"{data['summary']} Shall I go ahead?"
+                     if data.get("requires_confirmation") and steps
+                     else data.get("summary", "Done."))
+        
         # Keep the conversation coherent: later model turns must see this turn.
         session["history"].append({"role": "user", "content": [{"text": message}]})
         session["history"].append({"role": "assistant", "content": [{"text": reply}]})
