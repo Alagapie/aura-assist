@@ -184,14 +184,43 @@ def _describe_step(device: dict, patch: dict) -> str:
 
 
 def _plan_summary(name: str, planned: list[dict], exceptions: list[str]) -> str:
+    """Generate Alexa-like conversational summary for a routine."""
     if not planned and not exceptions:
-        return "Everything is already set for that - nothing to change."
+        return "Everything's already set just like that."
+    
+    # Build a more natural Alexa-style response
     parts = []
+    
     if exceptions:
-        parts.append("; ".join(exceptions))
+        # For exceptions, use a calm, conversational tone
+        exception_text = "; ".join(exceptions)
+        parts.append(f"By the way, {exception_text.lower()}.")
+    
     if planned:
-        parts.append(f"{len(planned)} change{'s' if len(planned) != 1 else ''} ready")
-    return ". ".join(parts) + "."
+        # Count device-type changes rather than raw step count
+        device_types = {}
+        for step in planned:
+            description = step.get('description', '')
+            # Extract device type from description
+            for dtype in ['light', 'door', 'thermostat', 'fan', 'curtains', 'lock']:
+                if dtype in description.lower():
+                    device_types[dtype] = device_types.get(dtype, 0) + 1
+                    break
+            else:
+                device_types['other'] = device_types.get('other', 0) + 1
+        
+        # Build natural language description of changes
+        change_count = len(planned)
+        if change_count == 1:
+            device_type = list(device_types.keys())[0] if device_types else 'thing'
+            parts.append(f"I can make one {device_type} adjustment for you.")
+        elif change_count <= 3:
+            parts.append(f"I can adjust {change_count} things for you.")
+        else:
+            parts.append(f"I can update {change_count} settings for you.")
+    
+    result = ". ".join(parts) if parts else "I can help with that."
+    return result + " Shall I go ahead?"
 
 
 def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
@@ -210,17 +239,37 @@ def run_routine(name: str, state: HomeState, source: str = "mcp") -> dict:
             applied.append(f"{step['description']}: {describe(before)} → {describe(after)}")
 
     state.set_mode(name if name in ("morning", "bedtime") else state.active_mode, source=f"routine:{name}")
+    
+    # Build Alexa-style summary
+    applied_count = len(applied)
+    failed_count = len(failed)
+    
+    if applied_count == 0 and failed_count == 0:
+        summary_text = "Everything's already just like that."
+    else:
+        # Build natural language description
+        parts = []
+        if applied_count == 1:
+            # Extract just the result from the first applied step
+            if applied:
+                result = applied[0].split(':')[-1].strip() if ':' in applied[0] else applied[0]
+                parts.append(f"Done. {result}.")
+        elif applied_count <= 3:
+            parts.append(f"Done. I've updated {applied_count} settings for you.")
+        else:
+            parts.append(f"Done. {applied_count} things updated successfully.")
+        
+        if failed_count > 0:
+            parts.append(f"{failed_count} steps didn't go through.")
+        
+        summary_text = " ".join(parts)
+    
     result = {
         "routine": name,
         "applied": applied,
         "skipped": failed,
         "exceptions": plan["exceptions"],
-        "summary": (
-            f"{name.replace('_', ' ')} complete. {len(applied)} change"
-            f"{'s' if len(applied) != 1 else ''} applied."
-            + (f" Note: {'; '.join(plan['exceptions'])}." if plan["exceptions"] else "")
-            + (f" {len(failed)} steps failed." if failed else "")
-        ),
+        "summary": summary_text,
     }
     event_store.record_event(kind="routine_run", source=source,
                              detail={"routine": name, "applied": len(applied), "failed": len(failed)})
