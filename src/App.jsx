@@ -5,6 +5,7 @@ import { House } from './three/House'
 import { ROOMS } from './config/house'
 import { Hud } from './ui/Hud'
 import { deviceService } from './services/deviceService'
+import { speak } from './services/speech'
 import { connectAuraStream } from './services/auraStream'
 import { baseUrl, describeBaseUrl, discover } from './services/auraConnection'
 import { watchCamera } from './services/cameraService'
@@ -93,7 +94,12 @@ export default function App() {
       // startup is independent and must not prevent camera frames from flowing.
       let lastCameraStatus = ''
       stopCamera = watchCamera({
-        getRoom: () => useRoomStore.getState().currentRoom,
+        getView: () => {
+          const s = useRoomStore.getState()
+          if (s.cameraMode === 'walk') return { room: s.currentRoom, key: `walk:${s.currentRoom}` }
+          if (s.view !== 'room') return { room: null, key: s.view }
+          return { room: s.currentRoom, key: `${s.currentRoom}:${s.cameraView.viewIndex}` }
+        },
         onStatus: ({ state, detail }) => {
           const signature = `${state}:${detail}`
           if (signature === lastCameraStatus || state === 'sending') return
@@ -114,6 +120,7 @@ export default function App() {
       }
       if (cancelled) return
       useRoomStore.getState().pushLog({ level: 'ok', text: `${deviceService.label} online` })
+      speak('AuraAssist is online and ready to help you.')
       useRoomStore.setState({ backendLabel: deviceService.label })
 
       // Live bridge: every change made on the server (agent, routine, MCP tool)
@@ -142,6 +149,7 @@ export default function App() {
 
     const interval = setInterval(() => useRoomStore.getState().tick(), 2000)
     const timer = setTimeout(() => setReady(true), 700)
+
     return () => {
       cancelled = true
       disconnect()

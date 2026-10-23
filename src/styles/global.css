@@ -626,8 +626,10 @@ kbd { background: rgba(255,255,255,0.09); border: 1px solid var(--border); borde
 .aura__tool:hover { color: var(--text); border-color: var(--border-strong); }
 
 .aura__log {
-  flex: 1; min-height: 150px; display: flex; flex-direction: column; gap: 5px;
+  flex: 1; min-height: 150px; max-height: 350px;
+  display: flex; flex-direction: column; gap: 5px;
   padding: 2px 3px; overflow-y: auto;
+  overflow-x: hidden;
 }
 .msg--aura { max-width: 96%; }
 
@@ -737,6 +739,18 @@ kbd { background: rgba(255,255,255,0.09); border: 1px solid var(--border); borde
   transition: all 0.16s ease;
 }
 .aura__send:hover { background: #bfa9ff; }
+.aura__send:disabled, .aura__mic:disabled { opacity: 0.45; cursor: default; }
+.aura__mic {
+  width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto; cursor: pointer;
+  display: grid; place-items: center; color: var(--muted);
+  border: 1px solid var(--border); background: transparent;
+  transition: all 0.16s ease;
+}
+.aura__mic:hover { color: var(--text); border-color: var(--border-strong); }
+.aura__mic--on { color: #150a2e; background: #f87171; border-color: transparent; animation: aura-pulse 1.2s ease-in-out infinite; }
+@keyframes aura-pulse { 50% { box-shadow: 0 0 0 5px rgba(248, 113, 113, 0.25); } }
+.aura__interim, .aura__note { font-size: 11px; color: var(--muted); padding: 0 2px; }
+.aura__interim { font-style: italic; }
 
 .aura__hint { font-size: 10px; color: var(--muted); padding: 0 2px; display: flex; align-items: center; gap: 5px; }
 

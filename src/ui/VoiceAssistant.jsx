@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Ear, Mic, MicOff, Send, Sparkles, X } from 'lucide-react'
 import { useRoomStore } from '../store/useRoomStore'
-import { parseCommand, ASSISTANT_NAME } from '../assistant/brain'
 import { invokeAgent } from '../services/auraApi'
 import {
   createRecognizer, speak, stopSpeaking, voiceInputSupported, voiceOutputSupported,
 } from '../services/speech'
-import { ROOMS } from '../config/house'
 
 /**
- * Alexa - the in-app voice assistant using AuraAssist MCP server.
+ * AuraAssist Voice Assistant - uses the same AuraAssist Amazon Bedrock agent
+ * as the text chat, with speech recognition and text-to-speech.
  *
- * This component is a simple MCP client that talks to the AuraAssist agent.
- * All conversational logic, routines, and confirmations happen on the server.
- * This client only handles STT (speech-to-text) and TTS (text-to-speech).
+ * This is NOT the rule-based brain.js assistant. All intelligent processing
+ * happens on the server using the Bedrock agent and MCP tools.
  *
  * Push the mic and talk, type into the box, or arm the wake word and keep
  * saying "Hey Alexa".
@@ -33,7 +31,7 @@ const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAR
 export function VoiceAssistant() {
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState([
-    { id: ++chatId, role: 'alexa', text: `Hi! I'm AuraAssist, your context-aware home companion. You can ask about your surroundings, control your home, or start a routine. What would you like to do? Try: \"movie mode\", \"good night\", \"what's on?\"` },
+    { id: ++chatId, role: 'assistant', text: `Hi! I'm AuraAssist, your context-aware home companion. You can ask about your surroundings, control your home, or start a routine. What would you like to do? Try: "movie mode", "good night", "what's on?"` },
   ])
   const [draft, setDraft] = useState('')
   const [interim, setInterim] = useState('')
@@ -70,108 +68,37 @@ export function VoiceAssistant() {
     setBusy(true)
 
     try {
-      // We'll check if this is a routine and handle it
-      const isRoutine = question.toLowerCase().includes('bedtime') || 
-                        question.toLowerCase().includes('good night') ||
-                        question.toLowerCase().includes('goodnight') ||
-                        question.toLowerCase().includes('leaving') ||
-                        question.toLowerCase().includes('morning') ||
-                        question.toLowerCase().includes('movie mode') ||
-                        question.toLowerCase().includes('prepare') ||
-                        question.toLowerCase().includes('start my')
-
       let reply = ''
       let needsConfirmation = false
 
-      if (isRoutine) {
-        // Use AuraAssist agent for routines
-        setBusy(true)
-        try {
-          const turn = await invokeAgent(question, 'voice-sim')
-          reply = turn.reply || 'I executed that command.'
-          needsConfirmation = !!turn.needs_user_input
-          
-          // Store pending routine for action list display
-          if (needsConfirmation) {
-            setPendingRoutine(question)
-            setPendingActions(turn.actions || [])
-          } else {
-            setPendingRoutine(null)
-            setPendingActions([])
-          }
-
-          // Log tool calls
-          for (const call of turn.tool_calls || []) {
-            useRoomStore.getState().pushLog({
-              level: 'info',
-              text: `Voice · ${call.name}${call.result ? ` · ${call.result}` : ''}`,
-            })
-          }
-
-          setBusy(false)
-        } catch (error) {
-          reply = `I couldn't reach AuraAssist - ${error.message}`
-          setBusy(false)
-        }
-      } else {
-        // Use local brain.js for simple commands
-        const snapshot = useRoomStore.getState()
-        const plan = parseCommand(question, {
-          devices: snapshot.devices,
-          room: snapshot.room,
-          currentRoom: snapshot.currentRoom,
-          activeMode: snapshot.activeMode,
-        })
-
-        const asksAgent = plan.actions.some((a) => a.kind === 'ask_agent')
-          || plan.intent === 'unknown'
-          || plan.intent === 'visual_query'
-          || plan.intent === 'object_location'
-
-        if (asksAgent) {
-          // Use agent for visual questions
-          const ask = plan.actions.find((a) => a.kind === 'ask_agent')?.question || question
-          try {
-            const turn = await invokeAgent(ask, 'voice-sim')
-            reply = turn.reply || 'One moment…'
-            setBusy(false)
-          } catch (error) {
-            reply = plan.reply || `I couldn't reach AuraAssist (${error.message}).`
-            setBusy(false)
-          }
+      // Use AuraAssist agent for ALL commands (voice or text)
+      setBusy(true)
+      try {
+        const turn = await invokeAgent(question, 'voice-sim')
+        reply = turn.reply || 'I executed that command.'
+        needsConfirmation = !!turn.needs_user_input
+        
+        // Store pending routine for action list display
+        if (needsConfirmation) {
+          setPendingRoutine(question)
+          setPendingActions(turn.actions || [])
         } else {
-          // Local command
-          reply = plan.reply || 'Done.'
-          if (voiceOutputSupported) {
-            wakeSuspendedRef.current = true
-            wakeRecRef.current?.stop()
-            speak(reply).then(() => {
-              wakeSuspendedRef.current = false
-              if (wakeWantedRef.current) wakeRecRef.current?.start()
-            })
-          }
-          
-          setBusy(true)
-          try {
-            await Promise.all(plan.actions.map((action) => {
-              const store = useRoomStore.getState()
-              if (action.kind === 'commit') return store.commit(action.id, action.patch, action.command)
-              if (action.kind === 'scene') return store.applyMode(action.modeId)
-              if (action.kind === 'nav') {
-                store.goToRoom(action.roomId)
-                store.pushLog({ level: 'info', text: `${ASSISTANT_NAME} · camera to the ${ROOMS[action.roomId]?.label || action.roomId}` })
-                return undefined
-              }
-              return undefined
-            }))
-          } finally {
-            setBusy(false)
-          }
-          
-          addMessage('alexa', reply)
-          setStatus('idle')
-          return
+          setPendingRoutine(null)
+          setPendingActions([])
         }
+
+        // Log tool calls
+        for (const call of turn.tool_calls || []) {
+          useRoomStore.getState().pushLog({
+            level: 'info',
+            text: `Voice · ${call.name}${call.result ? ` · ${call.result}` : ''}`,
+          })
+        }
+
+        setBusy(false)
+      } catch (error) {
+        reply = `I couldn't reach AuraAssist - ${error.message}`
+        setBusy(false)
       }
 
       // Speak the reply
@@ -183,7 +110,7 @@ export function VoiceAssistant() {
         if (wakeWantedRef.current) wakeRecRef.current?.start()
       }
 
-      addMessage('alexa', reply)
+      addMessage('assistant', reply)
 
       // Show confirmation if needed
       if (needsConfirmation) {
@@ -193,7 +120,7 @@ export function VoiceAssistant() {
 
     } catch (error) {
       const fallback = `I couldn't process that - ${error.message}`
-      addMessage('alexa', fallback)
+      addMessage('assistant', fallback)
       if (voiceOutputSupported) speak(fallback)
     } finally {
       setBusy(false)

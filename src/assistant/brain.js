@@ -510,15 +510,12 @@ function climateReply(state) {
 
 const plan = (reply, intent, actions = []) => ({ reply, intent, actions })
 
+// Add a specific case for 'Change the channel' commands
+const CHANNEL_CHANGE_PATTERN = /\bchange the channel\b/i
+
 const POLITE = /^(?:(?:hey|ok|okay|yo|hi|hello|please|computer|nova|alexa|sir|dear)\s+)*(?:alexa|nova|assistant)\b[,.]?\s*/i
 const NAV_PHRASE = /\b(?:go to|take me to|show me|head to|move to|switch to|look at|view|navigate to)\b\s*(.*)$/
 
-/**
- * Turn one utterance into a plan of store actions plus a spoken reply.
- *
- * @param {string} rawText  what the user said / typed
- * @param {object} state    `{ devices, room, currentRoom, activeMode }` snapshot
- */
 export function parseCommand(rawText, state = {}) {
   const text = normalize(String(rawText || '').replace(POLITE, ''))
   const devices = Object.values(state.devices || {})
@@ -526,7 +523,7 @@ export function parseCommand(rawText, state = {}) {
   const rooms = findRooms(text)
 
   /* ---- meta intents that need no device parsing ------------------------ */
-  // "hi alexa", "hey", "hello" - a sentence made only of greetings (or nothing
+  // 'hi alexa', 'hey', 'hello' - a sentence made only of greetings (or nothing
   // left after the wake-word prefix was stripped) is a greeting, not a mistake.
   const greetingLeft = text.replace(/\b(hi|hello|hey|hiya|howdy|yo|greetings|sup)\b/g, ' ').replace(/\s+/g, ' ')
   if (!text.trim() || (!greetingLeft.trim() && hasAny(text, GREETING_WORDS))) {
@@ -543,7 +540,7 @@ export function parseCommand(rawText, state = {}) {
     const rival = hasAny(text, ['siri', 'google'])
     return plan(
       rival
-        ? "No - I'm Alexa, this home's assistant."
+       ? "No - I'm Alexa, this home's assistant."
         : `I'm ${ASSISTANT_NAME}. Say "what can you do" for ideas.`,
       'identity'
     )
@@ -557,13 +554,23 @@ export function parseCommand(rawText, state = {}) {
   if (hasAny(text, ['status', 'report', 'summary', 'whats on', 'what is on', 'whats running', 'what is running', 'whats going on', 'how many devices'])) {
     return plan(statusReport(state), 'status')
   }
-  
-  /* ---- "what happening" / "what all" questions --------------------------- */
+
+  /* ---- 'Change the channel' command ---------------------------------------- */
+  if (CHANNEL_CHANGE_PATTERN.test(text)) {
+    const device = devices.find(d => d.type === 'tv')
+    if (device) {
+      const action = nudgeAction(device, 1, 'channel')
+      return plan('', 'command', [action])
+    }
+    return plan('I can\'t find the TV to change the channel.', 'error')
+  }
+
+  /* ---- 'what happening' / 'what all' questions --------------------------- */
   if (/\bwhat (?:happening|all|is going on|is happening|is on|running)\b/i.test(text)) {
     return plan(statusReport(state), 'happening')
   }
 
-  /* ---- climate ("how hot is it") ---------------------------------------- */
+  /* ---- climate ('how hot is it') ---------------------------------------- */
   const climateWords = ['how hot', 'how cold', 'temperature', 'room temp', 'humidity', 'weather', 'feel like']
   if (hasAny(text, climateWords) && /^\s*(what|whats|how|is|are)\b/.test(text)) {
     return plan(climateReply(state), 'climate')
@@ -572,12 +579,12 @@ export function parseCommand(rawText, state = {}) {
   /* ---- visual questions: what is on / in <place> ------------------------- */
   // The agent owns the VLM and the camera memory, so anything that asks what
   // is *visible* is handed over instead of being guessed at from the device
-  // list. `text` is normalised, so "what's" has already become "whats".
+  // list. `text` is normalised, so 'what\'s' has already become 'whats'.
   const visual = VISUAL_QUESTION.exec(text)
-  if (visual && !NOT_A_PLACE.test(visual[2])) {
+  if (visual &&!NOT_A_PLACE.test(visual[2])) {
     const where = visual[1] || 'on'
     let place = visual[2].trim().replace(/^(?:the|my|our)\s+/, '').trim()
-    // "counter in the kitchen" -> place "counter", room "kitchen"
+    // 'counter in the kitchen' -> place 'counter', room 'kitchen'
     const roomTail = /\b(?:in|on|at|from)\s+(?:the\s+)?([a-z]+)\s*$/.exec(place)
     let roomId = null
     if (roomTail) {
@@ -587,23 +594,23 @@ export function parseCommand(rawText, state = {}) {
         place = place.slice(0, roomTail.index).trim()
       }
     }
-    // The place itself may be a room ("what's in the bedroom").
+    // The place itself may be a room ('what\'s in the bedroom').
     if (!roomId && findRooms(place).size === 1) roomId = [...findRooms(place)][0]
-    const roomLabel = roomId ? ROOM_LABEL[roomId] : (state.currentRoom === 'living' ? 'living room' : state.currentRoom)
+    const roomLabel = roomId? ROOM_LABEL[roomId] : (state.currentRoom === 'living'? 'living room' : state.currentRoom)
     const ask = roomId
-      ? `What's ${where === 'in' ? 'in' : 'on'} the ${place} in the ${roomLabel}?`
-      : `What's ${where === 'in' ? 'in' : 'on'} the ${place}?`
-    return plan('', 'visual_query', [{ kind: 'ask_agent', question: ask }])
+     ? `What's ${where === 'in'? 'in' : 'on'} the ${place} in the ${roomLabel}?`
+      : `What's ${where === 'in'? 'in' : 'on'} the ${place}?`
+    return plan('', 'visual_query', [{ kind: 'ask_agent', question: rawText }])
   }
 
-  /* ---- object location ("where is my phone?") ---------------------------- */
-  // "where is X" is a camera-memory question, not a device question, so it
+  /* ---- object location ('where is my phone?') ---------------------------- */
+  // 'where is X' is a camera-memory question, not a device question, so it
   // goes to the agent - which searches the sighting memory and falls back to
   // looking through the cameras.
   const whereIs = /\b(?:where (?:is|are)|find|locate|lost)\b\s*(?:my|the|our)?\s*([a-z0-9 ]{2,30}?)\s*$/.exec(text)
-  if (whereIs && !NOT_A_PLACE.test(whereIs[1]) && !/\bwhats\b|\bwhat\b/.test(whereIs[1])) {
+  if (whereIs &&!NOT_A_PLACE.test(whereIs[1]) &&!/\bwhats\b|\bwhat\b/.test(whereIs[1])) {
     const item = whereIs[1].trim()
-    // "where is the kitchen light" is a device question - keep it local.
+    // 'where is the kitchen light' is a device question - keep it local.
     if (!findTargets(item, devices, rooms).length) {
       return plan('', 'object_location', [{ kind: 'ask_agent', question: rawText }])
     }

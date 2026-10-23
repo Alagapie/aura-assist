@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, Check, Ear, Mic, MicOff, Plug, RotateCcw, Send, Terminal, X } from 'lucide-react'
 import { invokeAgent, resetAgent, resetState, fetchHealth } from '../services/auraApi'
 import { createMcpClient } from '../services/mcpClient'
-import { createRecognizer, createRestartableRecognizer, speak, stopSpeaking, voiceInputSupported, voiceOutputSupported } from '../services/speech'
+import { createRecognizer, speak, stopSpeaking, voiceInputSupported, voiceOutputSupported } from '../services/speech'
 import { useRoomStore } from '../store/useRoomStore'
-import { setInvokeAgent } from '../assistant/brain'
 
 // Suggestions for the user
 const SUGGESTIONS = [
@@ -74,8 +73,16 @@ function ChatTab({ busy, messages, awaiting, onSend, onAnswer }) {
   const logRef = useRef(null)
 
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
-  }, [messages, busy, awaiting])
+    // Scroll to bottom when new messages arrive
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages])
+
+  useEffect(() => {
+    // Ensure scroll is at bottom on initial mount and when busy state changes
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
+  }, [busy])
 
   return (
     <>
@@ -259,13 +266,12 @@ export function AuraChat() {
   const inputRef = useRef(null)
   const msgId = useRef(1)
   
-  // Register the agent transport so the rule engine in assistant/brain.js can
-  // hand camera questions over to AuraAssist.
-  useEffect(() => {
-    setInvokeAgent(invokeAgent)
-    return () => setInvokeAgent(null)
-  }, [])
-
+  // Voice recognition support
+  const pushRecRef = useRef(null)
+  const [listening, setListening] = useState(false)
+  const [interim, setInterim] = useState('')
+  const [note, setNote] = useState('')
+  
   /* Probe the server once so the panel can be honest about being offline. */
   useEffect(() => {
     let cancelled = false
@@ -278,23 +284,6 @@ export function AuraChat() {
       .catch(() => !cancelled && setOnline(false))
     return () => { cancelled = true }
   }, [])
-
-  /* Open with "a" when nothing else is being typed into. */
-  useEffect(() => {
-    const onKey = (event) => {
-      if (open || event.metaKey || event.ctrlKey || event.altKey) return
-      const target = event.target
-      const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      if (typing || useRoomStore.getState().walkLocked) return
-      if (event.key.toLowerCase() === 'a') {
-        setOpen(true)
-        setTab('chat')
-        setTimeout(() => inputRef.current?.focus(), 30)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
 
   const push = (entry) => setMessages((m) => [...m, { id: msgId.current++, ...entry }])
 
@@ -333,6 +322,65 @@ export function AuraChat() {
     setAwaiting(null)
     send(text)
   }
+
+  // Voice recognition handler - must come after send() is defined
+  const stopListening = useCallback(() => {
+    pushRecRef.current?.stop()
+    setListening(false)
+  }, [])
+
+  const startListening = useCallback(() => {
+    if (!voiceInputSupported) {
+      setNote('Microphone not supported in this browser')
+      return
+    }
+    stopSpeaking()
+    setInterim('')
+    setNote('')
+    const rec = createRecognizer({
+      onInterim: (t) => setInterim(t),
+      onFinal: (t) => { 
+        setInterim('')
+        if (!busy) send(t)
+        rec.stop() 
+      },
+      onEnd: () => { 
+        setListening(false)
+        setInterim('')
+      },
+      onError: (error) => {
+        if (error === 'not-allowed' || error === 'service-not-allowed') {
+          setNote('Microphone blocked - allow mic access, or just type.')
+        }
+      },
+    })
+    if (!rec) {
+      setNote('Microphone not supported in this browser')
+      return
+    }
+    pushRecRef.current = rec
+    setListening(true)
+    rec.start()
+  }, [busy, send, stopSpeaking])
+
+  useEffect(() => () => { stopSpeaking() }, [])
+
+  /* Open with "a" when nothing else is being typed into. */
+  useEffect(() => {
+    const onKey = (event) => {
+      if (open || event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target
+      const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (typing || useRoomStore.getState().walkLocked) return
+      if (event.key.toLowerCase() === 'a') {
+        setOpen(true)
+        setTab('chat')
+        setTimeout(() => inputRef.current?.focus(), 30)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
 
   const resetAll = async () => {
     setAwaiting(null)
@@ -412,13 +460,27 @@ export function AuraChat() {
                   className="aura__input"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder={'Ask the house - e.g. "prepare for bed"'}
+                  placeholder={voiceInputSupported ? 'Ask the house, or tap the mic' : 'Ask the house - e.g. "prepare for bed"'}
                   aria-label="Ask AuraAssist"
                 />
-                <button type="submit" className="aura__send" title="Send" aria-label="Send">
+                {voiceInputSupported && (
+                  <button
+                    type="button"
+                    className={`aura__mic ${listening ? 'aura__mic--on' : ''}`}
+                    onClick={() => (listening ? stopListening() : startListening())}
+                    disabled={busy}
+                    title="Push to talk (auto-submits when speech ends)"
+                    aria-label="Push to talk"
+                  >
+                    {listening ? <MicOff size={15} /> : <Mic size={15} />}
+                  </button>
+                )}
+                <button type="submit" className="aura__send" title="Send" aria-label="Send" disabled={busy}>
                   <Send size={15} />
                 </button>
               </form>
+              {interim && <span className="aura__interim">{interim}…</span>}
+              {note && <span className="aura__note">{note}</span>}
             </>
           ) : (
             <McpTab />

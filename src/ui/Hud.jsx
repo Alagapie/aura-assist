@@ -11,7 +11,6 @@ import { ReportsView } from './ReportsView'
 import { RoomNavigation } from './RoomNavigation'
 import { StatusBar } from './StatusBar'
 import { ViewControls, CameraShortcuts } from './ViewControls'
-import { VoiceAssistant } from './VoiceAssistant'
 import { AuraChat } from './AuraChat'
 import { ConnectionPanel } from './ConnectionPanel'
 import { ROOMS } from '../config/house'
@@ -223,7 +222,6 @@ export function Hud() {
       <StatusBar onOpenConnection={() => setConnectionOpen(true)} />
       <ConnectionPanel open={connectionOpen} onClose={() => setConnectionOpen(false)} />
       <AuraChat />
-      <VoiceAssistant />
       <FloorPlanView />
       <ReportsView />
     </div>

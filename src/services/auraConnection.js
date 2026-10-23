@@ -123,12 +123,14 @@ async function probe(baseUrl) {
  */
 function candidates() {
   const list = []
+  // SAME_ORIGIN is '' - falsy, but a real candidate (the dev proxy, or a
+  // reverse proxy in production), so test membership rather than truthiness.
   const add = (value) => {
     const normalised = normaliseBaseUrl(value)
-    if (normalised && !list.includes(normalised)) list.push(normalised)
+    if (!list.includes(normalised)) list.push(normalised)
   }
 
-  if (current) add(current)
+  add(current)
 
   try {
     const { protocol, hostname } = window.location
@@ -141,7 +143,7 @@ function candidates() {
 
   add(`http://localhost:${DEFAULT_PORT}`)
   add(`http://127.0.0.1:${DEFAULT_PORT}`)
-  add(SAME_ORIGIN) // the Vite proxy, when one is running
+  add(SAME_ORIGIN) // the Vite proxy, when one is running (no-op if already first)
 
   return list
 }

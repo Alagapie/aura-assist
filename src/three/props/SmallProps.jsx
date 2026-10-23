@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { RoundedBox } from '@react-three/drei'
 import { Clickable } from '../helpers/Clickable'
+import { useCanvasTexture } from '../helpers/useCanvasTexture'
 import { useDevice, useRoomStore } from '../../store/useRoomStore'
 
 /**
@@ -18,25 +19,74 @@ const METAL = { color: '#8f959c', roughness: 0.3, metalness: 0.85 }
 
 /* ---------------------------------------------------------------- phone ----- */
 
+/* Icon tints for the home screen. */
+const APP_COLORS = ['#34c759', '#0a84ff', '#ff9f0a', '#ff375f', '#5e5ce6', '#64d2ff', '#ffd60a', '#bf5af2']
+
+/**
+ * A phone home screen: wallpaper, clock, a grid of app icons and a dock.
+ * A flat glowing panel reads as a notepad or a coaster to the vision model -
+ * this is what makes "where is my phone?" answerable from the camera.
+ */
+function drawPhoneScreen(ctx, lit) {
+  const { width: w, height: h } = ctx.canvas
+  if (!lit) {
+    ctx.fillStyle = '#07090d'
+    ctx.fillRect(0, 0, w, h)
+    return
+  }
+  const bg = ctx.createLinearGradient(0, 0, w, h)
+  bg.addColorStop(0, '#1d3b8f')
+  bg.addColorStop(1, '#6a2c91')
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, w, h)
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 30px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.fillText('12:45', w / 2, 52)
+  const size = 22
+  const gap = (w - 4 * size) / 5
+  for (let row = 0; row < 4; row += 1) {
+    for (let col = 0; col < 4; col += 1) {
+      ctx.fillStyle = APP_COLORS[(row * 4 + col) % APP_COLORS.length]
+      ctx.beginPath()
+      ctx.roundRect(gap + col * (size + gap), 82 + row * (size + 14), size, size, 6)
+      ctx.fill()
+    }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.22)'
+  ctx.beginPath()
+  ctx.roundRect(8, h - 42, w - 16, 34, 10)
+  ctx.fill()
+  for (let col = 0; col < 4; col += 1) {
+    ctx.fillStyle = APP_COLORS[col]
+    ctx.beginPath()
+    ctx.roundRect(gap + col * (size + gap), h - 36, size, size, 6)
+    ctx.fill()
+  }
+}
+
 export function Phone({ id = 'phone', position = [0, 0, 0], rotation = [0, 0, 0] }) {
   const device = useDevice(id)
+  const lit = !!device?.screen
+  const screen = useCanvasTexture(128, 256, (ctx) => drawPhoneScreen(ctx, lit), [lit])
   if (!device) return null
-  const lit = device.screen
   return (
     <Clickable id={id} position={position} rotation={rotation} labelOffset={[0, 0.14, 0]}>
-      {/* body - a light bezel so the shape reads as a phone against the wood */}
-      <RoundedBox args={[0.096, 0.012, 0.19]} radius={0.009} smoothness={3} castShadow>
-        <meshStandardMaterial color="#d9dde3" roughness={0.35} metalness={0.35} />
+      {/* body - a dark frame, so the bright screen reads as a phone's face. The
+          radius must stay under half the 0.012 thickness: a larger one bulges
+          the top above the screen plane and hides the screen completely. */}
+      <RoundedBox args={[0.096, 0.012, 0.19]} radius={0.005} smoothness={3} castShadow>
+        <meshStandardMaterial color="#1b1e23" roughness={0.35} metalness={0.4} />
       </RoundedBox>
       {/* screen (faces up) */}
       <mesh position={[0, 0.007, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[0.084, 0.174]} />
         <meshStandardMaterial
-          color="#0b0f16"
-          emissive={lit ? '#8fd6ff' : '#0b0f16'}
-          emissiveIntensity={lit ? 1.9 : 0.06}
+          map={screen}
+          emissiveMap={screen}
+          emissive="#ffffff"
+          emissiveIntensity={lit ? 0.85 : 0}
           roughness={0.25}
-          toneMapped={false}
         />
       </mesh>
       {/* charging indicator */}

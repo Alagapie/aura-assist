@@ -695,8 +695,10 @@ test('a remote description follows its target state', () => {
 })
 
 test('the phone reports its screen and charge state', () => {
-  const phone = devices.phone
-  assert.equal(phone.propKind, 'phone')
+  // The default phone has its screen lit so the vision model can spot it.
+  assert.equal(devices.phone.propKind, 'phone')
+  assert.equal(devices.phone.screen, true)
+  const phone = { ...devices.phone, screen: false }
   assert.equal(isDeviceOn(phone), false)
   assert.match(describeDevice(phone, devices), /Screen off · charging/)
   const awake = { ...phone, screen: true, battery: 42 }
