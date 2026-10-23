@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo/auraassist-logo-dark.png">
+    <img src="docs/images/logo/auraassist-logo-light.png" alt="AuraAssist" width="460">
+  </picture>
+</p>
+
 # AuraAssist — a context-aware home companion for Alexa+
 
 AuraAssist is a **self-hosted MCP server** that lets an Alexa+ style assistant see,
