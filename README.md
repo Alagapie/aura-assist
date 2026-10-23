@@ -21,7 +21,7 @@ before touching anything. Unlocking the front door always needs an explicit "yes
 ## What it does
 
 - **Controls the home through MCP tools only.** The voice agent, the 3D web app and any
-  MCP client (Alexa+, MCP Inspector) all go through the same 8 tools, the same
+  MCP client (Alexa+, MCP Inspector) all go through the same 9 tools, the same
   state and the same event log.
 - **Sees the home.** The 3D simulator posts what each room camera shows. Nova Lite
   turns each frame into structured objects (`phone, on the coffee table`), and
