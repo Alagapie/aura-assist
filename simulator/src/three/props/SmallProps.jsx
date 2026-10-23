@@ -103,6 +103,46 @@ export function Phone({ id = 'phone', position = [0, 0, 0], rotation = [0, 0, 0]
   )
 }
 
+/* -------------------------------------------------------------- glasses ----- */
+
+/**
+ * Folded reading glasses standing on their temples, lenses facing the room.
+ * Not a smart device - just something a person puts down and forgets, which
+ * is exactly what "where are my glasses?" has to find through the camera.
+ * Bold frames on purpose: thin wire rims vanish at camera distance.
+ */
+export function Glasses({ position = [0, 0, 0], rotation = [0, 0, 0] }) {
+  const frame = { color: '#151515', roughness: 0.35, metalness: 0.2 }
+  return (
+    <group position={position} rotation={rotation}>
+      {[-0.036, 0.036].map((x) => (
+        <group key={x} position={[x, 0.03, 0]}>
+          <mesh castShadow>
+            <torusGeometry args={[0.029, 0.0055, 10, 28]} />
+            <meshStandardMaterial {...frame} />
+          </mesh>
+          <mesh>
+            <circleGeometry args={[0.027, 28]} />
+            <meshStandardMaterial color="#cfe3f0" transparent opacity={0.35} roughness={0.05} metalness={0.1} />
+          </mesh>
+        </group>
+      ))}
+      {/* bridge */}
+      <mesh position={[0, 0.041, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.004, 0.004, 0.02, 8]} />
+        <meshStandardMaterial {...frame} />
+      </mesh>
+      {/* folded temples, resting on the table behind the lenses */}
+      {[[-0.004, 0.006], [0.004, 0.014]].map(([dz, y], i) => (
+        <mesh key={i} position={[0, y, -0.012 + dz]} castShadow>
+          <boxGeometry args={[0.13, 0.006, 0.005]} />
+          <meshStandardMaterial {...frame} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
 /* --------------------------------------------------------------- remote ----- */
 
 export function Remote({ id = 'tvRemote', position = [0, 0, 0], rotation = [0, 0, 0] }) {

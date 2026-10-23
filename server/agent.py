@@ -76,6 +76,8 @@ Its result has detailed objects with locations - be PRECISE. If asked "what's on
 look up objects where location mentions that surface. Give a direct answer naming \
 the actual objects you see. Don't guess from stale data if fresh vision is available.
 - Accessibility or privacy preferences -> set_user_preference
+- Daily summary or a caregiver update -> generate_daily_briefing (the caregiver \
+audience is consent-gated by the tool; relay its answer as is)
 
 SAFETY - hard rules, no exceptions:
 - Unlocking is security-sensitive. To request it you MUST first call \
@@ -115,7 +117,7 @@ MAX_HISTORY_MESSAGES = 24
 # Canonical routine phrases -> routine name. Shared by both engines so a
 # demo-critical request behaves identically offline and on Bedrock.
 _ROUTINE_PHRASES: list[tuple[str, tuple[str, ...]]] = [
-    ("bedtime", ("prepare for bed", "get ready for bed", "time for bed",
+    ("bedtime", ("prepare for bed", "ready for bed", "time for bed",
                  "bedtime routine", "going to bed")),
     ("leaving_home", ("i'm leaving", "im leaving", "leaving now", "leaving home",
                       "i'm off", "im off", "going out", "heading out")),
@@ -132,7 +134,8 @@ _STATUS_PHRASES = (
     "how are things", "state of the house", "state of the home",
     "check the house", "check the home", "house status", "home status",
     "everything ok", "everything okay", "all good", "briefing", "brief me",
-    "what do we have", "status",
+    "what do we have", "status", "unsafe", "is it safe", "anything dangerous",
+    "anything wrong", "safety check",
 )
 
 
@@ -338,6 +341,12 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         # the user walked away from.
         session["pending"] = None
 
+    # Consent and daily summaries are resolved by code: who may see what must
+    # never depend on how a model reads the sentence.
+    care = await _route_care(message, tool_log)
+    if care:
+        return _respond(session, care, tool_log)
+
     # Canonical routine phrases plan deterministically - asking twice must
     # always produce a plan to confirm, whatever the model feels like doing.
     routine = _detect_routine(message)
@@ -491,9 +500,48 @@ def _find_kind(text: str) -> str | None:
     return None
 
 
+# ------------------------------------------------- consent + daily summary --
+
+_CARER = r"(daughter|son|caregiver|carer|family|niece|nephew|grand\w+|sister|brother)"
+_SHARE_STOP = re.compile(r"\b(stop|don'?t|do not|no longer|turn off)\b.*\bshar(e|ing)\b")
+_SHARE_START = re.compile(rf"\b(share|send)\b.*\b(summary|update|day|briefing)\b.*\b(with|to)\b.*\b{_CARER}\b"
+                          rf"|\b(allow|turn on)\b.*\b({_CARER}|sharing)\b")
+_CARER_ASK = re.compile(r"\b(caregiver|carer|family)\b.*\b(update|summary|briefing)\b"
+                        r"|\bhow (was|is|did)\b.*\b(mum|mom|dad|mother|father|grandma|grandpa|nan|\w+'s)\b.*\b(day|doing|today)\b"
+                        r"|\b(update|summary) (on|for|about)\b.*\b(mum|mom|dad|mother|father|grandma|grandpa)\b")
+_OWN_DAY = re.compile(r"\bhow was my day\b|\bsummary of my day\b|\bmy daily (briefing|summary)\b|\bdaily briefing\b")
+
+
+async def _route_care(message: str, tool_log: list[dict]) -> str | None:
+    """Sharing consent and daily summaries. Returns the reply, or None."""
+    from .reasoning import CAREGIVER_CONSENT
+
+    text = message.lower()
+
+    async def call(name: str, args: dict) -> dict:
+        data, _ = await _call_tool(name, args)
+        tool_log.append({"name": name, "arguments": args, "result": _summarise_call(name, args, data)})
+        return data
+
+    if _SHARE_STOP.search(text):
+        await call("set_user_preference", {"key": CAREGIVER_CONSENT, "value": "no"})
+        return "Sharing is off. Your caregiver won't receive daily summaries."
+    if _SHARE_START.search(text):
+        await call("set_user_preference", {"key": CAREGIVER_CONSENT, "value": "yes"})
+        return ("Okay - I'll share a daily summary with your caregiver: routines, the front door "
+                "and safety alerts only, never camera images. Say \"stop sharing\" any time.")
+    if _CARER_ASK.search(text):
+        data = await call("generate_daily_briefing", {"audience": "caregiver"})
+        return data.get("spoken", "I couldn't put the summary together just now.")
+    if _OWN_DAY.search(text):
+        data = await call("generate_daily_briefing", {"audience": "user"})
+        return data.get("spoken", "I couldn't put the summary together just now.")
+    return None
+
+
 # ------------------------------------------------------- object location --
 
-_LOCATION_Q = re.compile(r"\b(?:where (?:is|are|did)|find|locate|lost|seen)\b")
+_LOCATION_Q = re.compile(r"\b(?:where (?:is|are|did)|find|locate|lost|seen|last see|last saw)\b")
 # "on the bedside table" -> "bedside"; "on the table" -> "table".
 _SURFACE_RE = re.compile(
     r"\b(?:(coffee|bedside|kitchen|dining|side)\s+)?(table|desk|nightstand|stand|shelf|counter|sofa|couch|bed)\b")
@@ -508,7 +556,7 @@ _SPOKEN_ROOM = {"living": "living room", "hallway": "hall"}
 _FILLER = re.compile(
     r"\b(?:on|at|in|near|by|the|my|a|an|our|table|coffee|bedside|dining|side|desk|nightstand|stand|"
     r"shelf|counter|sofa|couch|bed|floor|located|location|where|is|are|it|did|i|leave|left|put|you|"
-    r"have|seen|please|can|living|room|bedroom|kitchen|bathroom|hallway|hall)\b")
+    r"have|seen|see|saw|last|when|please|can|living|room|bedroom|kitchen|bathroom|hallway|hall)\b")
 
 
 def _extract_item(message: str) -> tuple[str, tuple[str, ...]]:
@@ -517,7 +565,7 @@ def _extract_item(message: str) -> tuple[str, tuple[str, ...]]:
     The second value lists words the object's location must contain; empty
     when the user did not name a surface."""
     text = message.lower()
-    tail = re.sub(r".*?\b(?:where (?:is|are|did)|find(?: my)?|locate|lost(?: my)?|seen)\b", "", text, count=1)
+    tail = re.sub(r".*?\b(?:where (?:is|are|did)|find(?: my)?|locate|lost(?: my)?|seen|last (?:see|saw))\b", "", text, count=1)
     surface: tuple[str, ...] = ()
     m = _SURFACE_RE.search(tail)
     if m:
@@ -553,6 +601,23 @@ async def _locate_object(message: str, tool_log: list[dict]) -> str:
     else:
         rooms = []
 
+    async def remembered() -> str | None:
+        memory, _ = await _call_tool("find_object", {"object_name": item})
+        tool_log.append({"name": "find_object", "arguments": {"object_name": item},
+                         "result": _summarise_call("find_object", {"object_name": item}, memory)})
+        if not memory.get("found"):
+            return None
+        when = datetime.fromisoformat(memory["last_seen"]).astimezone().strftime("%I:%M %p").lstrip("0")
+        room = _SPOKEN_ROOM.get(memory.get("room"), memory.get("room") or "house")
+        return f"I last saw your {item} {memory.get('location', 'nearby')} in the {room}, at {when}."
+
+    # "When did you last see my glasses?" is a memory question: answer from
+    # the sighting log (with its time) before looking again.
+    if re.search(r"\b(last|when)\b", message.lower()):
+        answer = await remembered()
+        if answer:
+            return answer
+
     unseen: list[str] = []
     for room in rooms:
         scene, _ = await _call_tool("describe_scene", {"camera_id": room})
@@ -566,13 +631,13 @@ async def _locate_object(message: str, tool_log: list[dict]) -> str:
             where = obj.get("location", "").lower()
             if any(t in label for t in terms) and (not surface or any(s in where for s in surface)):
                 spot = obj.get("location") or "in view"
-                return f"I can see your {obj['label']} {spot} in the {_SPOKEN_ROOM.get(room, room)}."
+                # Use the user's word ("glasses"), not the model's ("eye glasses").
+                noun = item if item != "it" else obj["label"]
+                return f"I can see your {noun} {spot} in the {_SPOKEN_ROOM.get(room, room)}."
 
-    memory, _ = await _call_tool("find_object", {"object_name": item})
-    tool_log.append({"name": "find_object", "arguments": {"object_name": item},
-                     "result": _summarise_call("find_object", {"object_name": item}, memory)})
-    if memory.get("found"):
-        return memory.get("spoken", "I found a recent sighting.")
+    answer = await remembered()
+    if answer:
+        return answer
 
     if hinted and unseen:
         return f"I haven't had a camera view of the {unseen[0]} yet - open that room so I can look for your {item}."
@@ -635,6 +700,10 @@ async def invoke_mock(message: str, session_id: str) -> dict:
     # must never be read as a bedtime request.
     if _LOCATION_Q.search(plain):
         return _respond(session, await _locate_object(message, tool_log), tool_log)
+
+    care = await _route_care(message, tool_log)
+    if care:
+        return _respond(session, care, tool_log)
 
     # 4 - routines (specific phrases only, before generic device control)
     question = re.match(r"(what|whats|what's|is|are|show|describe|check)\b", plain)
@@ -729,7 +798,8 @@ async def invoke_mock(message: str, session_id: str) -> dict:
 
     # 7 - status
     if any(k in plain for k in ("what's on", "what is on", "status", "running",
-                                "happening", "house", "home", "quiet", "calm")) \
+                                "happening", "house", "home", "quiet", "calm",
+                                "safe", "danger", "anything wrong")) \
             and "happened" not in plain:
         snap = await run("get_home_snapshot", {})
         digest = snap.get("digest", {})

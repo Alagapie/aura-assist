@@ -101,6 +101,7 @@ async def health() -> dict:
         "service": "aura-assist",
         "devices": len(state.snapshot()["devices"]),
         "agent_engine": "bedrock" if os.environ.get("AURA_USE_BEDROCK") == "1" else "mock",
+        "live_cameras": vision.live_cameras(),
     }
 
 

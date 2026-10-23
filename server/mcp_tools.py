@@ -270,9 +270,14 @@ def generate_daily_briefing(audience: str = "user") -> dict:
     """
     A calm summary of today's home activity.
 
+    The caregiver summary is only produced when the resident has set the
+    `share_with_caregiver` preference to "yes"; otherwise nothing is shared.
+    It contains activity facts only (routines, the front door, safety
+    alerts) - never camera content or inferences about the person.
+
     Args:
         audience: "user" for a first-person daily recap, "caregiver" for a
-                  neutral activity summary (no personal inferences).
+                  consent-gated, neutral activity summary.
     """
     from .reasoning import briefing  # Bedrock-backed, mock fallback built in
     return briefing(audience)

@@ -5,7 +5,7 @@ import { RoomFill } from '../appliances/RoomFill'
 import { SmartPanel } from '../appliances/Switches'
 import { Bed, BedsideTable, Wardrobe, BedroomBench } from '../furniture/BedroomFurniture'
 import { Plant, Rug, WallArt } from '../furniture/Furniture'
-import { Remote } from '../props/SmallProps'
+import { Glasses, Remote } from '../props/SmallProps'
 
 /**
  * Bedroom (x:[-4,4], z:[-9,-3]), north of the living room.
@@ -41,6 +41,8 @@ export function Bedroom() {
       <BedsideTable position={[3.37, 0, -8.75]} />
       {/* the bedside remote is paired with the bedroom AC */}
       <Remote id="bedroomRemote" position={[3.51, 0.567, -8.65]} rotation={[0, 0.15, 0]} />
+      {/* reading glasses on the left bedside table, turned toward the room camera */}
+      <Glasses position={[0.74, 0.56, -8.58]} rotation={[0, -0.47, 0]} />
       <Wardrobe position={[-3.7, 0, -7.8]} rotation={[0, Math.PI / 2, 0]} />
       <BedroomBench position={[2.15, 0, -6.45]} />
 
