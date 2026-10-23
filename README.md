@@ -15,6 +15,9 @@ before touching anything. Unlocking the front door always needs an explicit "yes
 |---|---|
 | **Primary track** | **Alexa+**: self-hosted MCP server, Streamable HTTP transport, protocol `2026-07-28` (official `mcp` Python SDK 2.3), plus a simulated Alexa+ experience in a web app |
 | **Mini challenge** | **AWS Builder**: Amazon Bedrock (Converse API) with Amazon Nova Lite for tool-calling, vision and briefings |
+| **Friction log** | [docs/friction-log.md](docs/friction-log.md): 12 real issues with steps, severity, workarounds and suggestions |
+
+![The AuraAssist 3D home simulator](docs/images/house-overview.jpg)
 
 ---
 
@@ -37,6 +40,8 @@ before touching anything. Unlocking the front door always needs an explicit "yes
   fails, it says so instead of guessing.
 
 ## Architecture
+
+![Architecture: AuraAssist, agent, Amazon Bedrock, MCP server, home tools, home state](docs/images/architecture.jpg)
 
 ```mermaid
 flowchart LR
@@ -114,6 +119,8 @@ npm run dev
 
 Open **http://localhost:5173**. The simulator finds the server on its own and
 proxies to it. Press **A** (or click the assistant button) to chat, or use the mic.
+Use **Chrome or Edge** for voice: Firefox has no speech recognition, but typing works
+in any browser.
 
 ### 3. Connect an MCP client (the Alexa+ path)
 
@@ -137,6 +144,13 @@ Every change made over MCP shows up live in the 3D house.
 | "unlock the front door" | Refused until you confirm |
 | "turn off the kitchen lights" | Direct device control, mirrored in 3D |
 
+A real Bedrock turn: *"turn off the living room lights"*. Nova Lite chose six
+`control_device` calls through the MCP server, and the house updated live.
+
+| Before | After |
+|---|---|
+| ![Living room with lights on](docs/images/living-room-before.jpg) | ![Living room after the agent turned the lights off](docs/images/living-room-after.jpg) |
+
 ## Tests
 
 ```bash
@@ -150,12 +164,16 @@ python scripts/smoke_agent.py            # agent behaviour + safety rules
 python scripts/smoke_vision_flow.py      # end-to-end object finding
 ```
 
+All suites pass on a fresh clone in the default offline mode (`AURA_USE_BEDROCK=0`).
+In Bedrock mode, open the simulator first so the room cameras have posted a frame.
+Otherwise the vision steps correctly report "not seen yet" instead of answering.
+
 ## Repository layout
 
 ```
 server/          FastAPI app, MCP server, agent, routines, vision, event store
 scripts/         Bedrock check, terminal chat, smoke tests
-docs/            AWS setup guide
+docs/            AWS setup guide, friction log, screenshots
 simulator/       React Three Fiber 3D home (the house and its cameras)
   src/three/       rooms, furniture, appliances
   src/services/    server connection, SSE bridge, camera capture
