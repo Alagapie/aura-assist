@@ -69,7 +69,7 @@ app.add_middleware(
     expose_headers=["mcp-session-id"],
 )
 
-_queues: set[asyncio.Queue] = {}
+_queues: dict[int, asyncio.Queue] = {}
 
 
 @app.get("/")
@@ -190,16 +190,26 @@ async def vision_describe(payload: dict) -> dict:
         except (ValueError, TypeError):
             return {"error": "image_base64 is not valid base64"}
 
+    # Optional zoomed quarters of the same frame - they let the VLM read small
+    # objects (phones, keys) that are only a few pixels in the whole-room shot.
+    tiles: list[bytes] = []
+    for tile in (payload.get("tiles_base64") or [])[:4]:
+        try:
+            tiles.append(base64.b64decode(tile, validate=False))
+        except (ValueError, TypeError):
+            return {"error": "tiles_base64 contains invalid base64"}
+
     if frame:
         # Remember it, so a later describe_scene(camera_id) - e.g. the agent's
         # MCP call when you ask "what's in the kitchen?" - analyses this exact
         # frame instead of falling back to the mock scene.
-        vision.remember_frame(camera_id, frame)
+        vision.remember_frame(camera_id, frame, tiles)
 
     result = vision.describe_scene(
         camera_id,
         image_bytes=frame,
         mime=payload.get("mime", "image/jpeg"),
+        tiles=tiles,
     )
     return result
 

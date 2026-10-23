@@ -180,9 +180,9 @@ async def _call_tool(name: str, arguments: dict) -> tuple[dict, str]:
 def _summarise_call(name: str, arguments: dict, data: dict) -> str:
     """One line for the on-screen tool-call log (the judging artifact)."""
     if "error" in data:
-        return f"{name} â†’ {data['error']}"
+        return f"{name} → {data['error']}"
     if name == "control_device" and "before" in data:
-        return f"{data.get('name', arguments.get('device_id'))}: {data['before']} â†’ {data['after']}"
+        return f"{data.get('name', arguments.get('device_id'))}: {data['before']} → {data['after']}"
     if name == "run_routine":
         if "steps" in data:
             return f"{name}({arguments.get('routine_name')}) planned {len(data['steps'])} steps"
@@ -197,6 +197,17 @@ def _summarise_call(name: str, arguments: dict, data: dict) -> str:
     if name == "get_home_snapshot":
         return f"snapshot: {len(data.get('devices', []))} devices"
     return name
+
+
+def _routine_reply(data: dict) -> str:
+    """Spoken reply for a planned routine. plan_routine's summary is a dict
+    ({spoken, actions, ...}); older plans used a plain string."""
+    summary = data.get("summary")
+    if isinstance(summary, dict):
+        return summary.get("spoken") or "Done."
+    if data.get("requires_confirmation") and data.get("steps"):
+        return f"{summary} Shall I go ahead?"
+    return summary or "Done."
 
 
 def _apply_guardrails(calls: list[tuple[str, dict]], session: dict, user_text: str) -> list[tuple[str, dict]]:
@@ -223,7 +234,7 @@ def _apply_guardrails(calls: list[tuple[str, dict]], session: dict, user_text: s
 
 def _track_pending(session: dict, name: str, arguments: dict, data: dict) -> None:
     """Remember what asked for confirmation, so a later 'yes' can unlock it."""
-    if name == "run_routine" and "steps" in data and arguments.get("confirm") is not True:
+    if name == "run_routine" and data.get("steps") and arguments.get("confirm") is not True:
         session["pending"] = {"type": "routine", "name": arguments.get("routine_name")}
     elif name == "control_device" and data.get("status") == "needs_confirmation":
         session["pending"] = {"type": "unlock", "device_id": arguments.get("device_id")}
@@ -323,6 +334,9 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         if _is_decline(plain):
             session["pending"] = None
             return _respond(session, "Understood - nothing was changed.", tool_log)
+        # Any other request moves on: a later "yes" must never approve a plan
+        # the user walked away from.
+        session["pending"] = None
 
     # Canonical routine phrases plan deterministically - asking twice must
     # always produce a plan to confirm, whatever the model feels like doing.
@@ -333,19 +347,8 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         tool_log.append({"name": "run_routine", "arguments": args,
                          "result": _summarise_call("run_routine", args, data)})
         _track_pending(session, "run_routine", args, data)
-        
-        # Support both old (summary) and new (spoken, actions) response formats
-        if isinstance(data.get("summary"), dict):
-            # New format: {spoken, actions, needs_confirmation}
-            summary_data = data["summary"]
-            reply = summary_data.get("spoken", data.get("summary", "Done."))
-        else:
-            # Old format: plain string
-            steps = len(data.get("steps", []))
-            reply = (f"{data['summary']} Shall I go ahead?"
-                     if data.get("requires_confirmation") and steps
-                     else data.get("summary", "Done."))
-        
+        reply = _routine_reply(data)
+
         # Keep the conversation coherent: later model turns must see this turn.
         session["history"].append({"role": "user", "content": [{"text": message}]})
         session["history"].append({"role": "assistant", "content": [{"text": reply}]})
@@ -355,54 +358,8 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
 
     # Resolve item-location requests in code before the LLM. This keeps voice
     # queries grounded in sighting memory and the current camera view.
-    location_query = bool(re.search(r"\b(?:where (?:is|are)|find|locate|lost)\b", message.lower()))
-    if location_query:
-        item_text = re.sub(r".*?\b(?:where (?:is|are)|find(?: my)?|locate|lost(?: my)?)\b", "", message.lower()).strip()
-        surface_query = bool(re.search(r"\b(?:table|desk|stand|shelf|counter)\b", item_text))
-        item = re.sub(r"\b(?:on|at|in|near|by|the|my|a|an|table|coffee|desk|stand|shelf|counter|located|location|where|is|are|it)\b", " ", item_text)
-        item = re.sub(r"\s+", " ", item).strip(" ?.,!'’") or "it"
-        memory, _ = await _call_tool("find_object", {"object_name": item})
-        tool_log.append({"name": "find_object", "arguments": {"object_name": item},
-                         "result": _summarise_call("find_object", {"object_name": item}, memory)})
-        if memory.get("found") and not surface_query:
-            return _respond(session, memory.get("spoken", "I found a recent sighting."), tool_log)
-        # If memory has no usable sighting, search current room frames. Surface
-        # requests stay in the named room (or living room); phones are common in
-        # living/bedroom scenes, while other items get a small room sweep.
-        vision_failures = []
-        if surface_query or not memory.get("found"):
-            hinted_room = _find_room(message)
-            if hinted_room:
-                rooms = [hinted_room]
-            elif surface_query:
-                rooms = ["living"]
-            elif item.lower() in ("phone", "wallet", "glasses"):
-                rooms = ["living", "bedroom", "kitchen"]
-            elif item.lower() in ("keys", "key"):
-                rooms = ["kitchen", "living", "bedroom"]
-            else:
-                rooms = ["living", "kitchen", "bedroom"]
-            for room in rooms:
-                scene, _ = await _call_tool("describe_scene", {"camera_id": room})
-                tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room},
-                                 "result": _summarise_call("describe_scene", {"camera_id": room}, scene)})
-                if "error" in scene:
-                    vision_failures.append(scene.get("message", "camera unavailable"))
-                    continue
-                matches = [o for o in scene.get("objects", [])
-                           if item.lower() in o.get("label", "").lower()
-                           and (not surface_query or any(s in o.get("location", "").lower()
-                                                          for s in ("table", "desk", "stand", "shelf", "counter")))]
-                if matches:
-                    found = matches[0]
-                    return _respond(session, f"I can see your {found['label']} {found.get('location', 'in the room')}.", tool_log)
-        if memory.get("found"):
-            return _respond(session, memory.get("spoken", "I found a recent sighting."), tool_log)
-        if vision_failures:
-            return _respond(session, f"I couldn't verify the camera views just now, and I have no recent sighting of your {item}.", tool_log)
-        if surface_query:
-            return _respond(session, f"I couldn't find your {item} on a visible surface or in recent sightings.", tool_log)
-        return _respond(session, f"I couldn't find a recent sighting of your {item}.", tool_log)
+    if _LOCATION_Q.search(message.lower()):
+        return _respond(session, await _locate_object(message, tool_log), tool_log)
     # Fridge-content questions: call describe_scene("fridge") for accurate inventory
     fridge_q = re.search(r"\b(what'?s|what is|show me|check|open|inside|in|contents? of)\b.*\b(fridge|refrigerator|freezer)\b"
                          r"|\b(fridge|refrigerator|freezer)\b.*\b(content|inside|have|got|contain)", message.lower())
@@ -426,7 +383,7 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
         # Try to infer room from context
         if "kitchen" in message.lower(): room_hint = "kitchen"
         elif "bedroom" in message.lower(): room_hint = "bedroom"
-        elif "hall" in message.lower(): room_hint = "hall"
+        elif "hall" in message.lower(): room_hint = "hallway"
         elif "bath" in message.lower(): room_hint = "bathroom"
         data, _ = await _call_tool("describe_scene", {"camera_id": room_hint})
         tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room_hint},
@@ -534,10 +491,106 @@ def _find_kind(text: str) -> str | None:
     return None
 
 
+# ------------------------------------------------------- object location --
+
+_LOCATION_Q = re.compile(r"\b(?:where (?:is|are|did)|find|locate|lost|seen)\b")
+# "on the bedside table" -> "bedside"; "on the table" -> "table".
+_SURFACE_RE = re.compile(
+    r"\b(?:(coffee|bedside|kitchen|dining|side)\s+)?(table|desk|nightstand|stand|shelf|counter|sofa|couch|bed)\b")
+# What the user says vs. what the VLM may write for the same surface.
+_SURFACE_ALIASES = {
+    "bedside": ("bedside", "nightstand", "night stand"),
+    "nightstand": ("bedside", "nightstand", "night stand"),
+    "sofa": ("sofa", "couch"),
+    "couch": ("sofa", "couch"),
+}
+_SPOKEN_ROOM = {"living": "living room", "hallway": "hall"}
+_FILLER = re.compile(
+    r"\b(?:on|at|in|near|by|the|my|a|an|our|table|coffee|bedside|dining|side|desk|nightstand|stand|"
+    r"shelf|counter|sofa|couch|bed|floor|located|location|where|is|are|it|did|i|leave|left|put|you|"
+    r"have|seen|please|can|living|room|bedroom|kitchen|bathroom|hallway|hall)\b")
+
+
+def _extract_item(message: str) -> tuple[str, tuple[str, ...]]:
+    """'where is my phone on the bedside table?' -> ('phone', ('bedside', 'nightstand', ...)).
+
+    The second value lists words the object's location must contain; empty
+    when the user did not name a surface."""
+    text = message.lower()
+    tail = re.sub(r".*?\b(?:where (?:is|are|did)|find(?: my)?|locate|lost(?: my)?|seen)\b", "", text, count=1)
+    surface: tuple[str, ...] = ()
+    m = _SURFACE_RE.search(tail)
+    if m:
+        word = m.group(1) or m.group(2)
+        surface = _SURFACE_ALIASES.get(word, (word,))
+    item = re.sub(r"\s+", " ", _FILLER.sub(" ", tail)).strip(" ?.,!'’")
+    return item or "it", surface
+
+
+async def _locate_object(message: str, tool_log: list[dict]) -> str:
+    """
+    "Where is my X?" - look first, then remember.
+
+    1. the room the user named, else every room the simulator has actually
+       shown the camera (cached results, so this costs no extra VLM call),
+    2. the sighting memory (find_object), which may be older,
+    3. an honest answer about what could not be checked.
+    """
+    from . import vision
+    from .event_store import search_terms
+
+    item, surface = _extract_item(message)
+    terms = search_terms(item)
+    hinted = _find_room(message.lower())
+    bedrock = os.environ.get("AURA_USE_BEDROCK") == "1"
+    live = vision.live_cameras()
+    if hinted:
+        rooms = [hinted]
+    elif live:
+        rooms = live
+    elif not bedrock:
+        rooms = ["living", "kitchen", "bedroom"]   # offline demo: simulated scenes
+    else:
+        rooms = []
+
+    unseen: list[str] = []
+    for room in rooms:
+        scene, _ = await _call_tool("describe_scene", {"camera_id": room})
+        tool_log.append({"name": "describe_scene", "arguments": {"camera_id": room},
+                         "result": _summarise_call("describe_scene", {"camera_id": room}, scene)})
+        if "error" in scene:
+            unseen.append(_SPOKEN_ROOM.get(room, room))
+            continue
+        for obj in scene.get("objects", []):
+            label = obj.get("label", "").lower()
+            where = obj.get("location", "").lower()
+            if any(t in label for t in terms) and (not surface or any(s in where for s in surface)):
+                spot = obj.get("location") or "in view"
+                return f"I can see your {obj['label']} {spot} in the {_SPOKEN_ROOM.get(room, room)}."
+
+    memory, _ = await _call_tool("find_object", {"object_name": item})
+    tool_log.append({"name": "find_object", "arguments": {"object_name": item},
+                     "result": _summarise_call("find_object", {"object_name": item}, memory)})
+    if memory.get("found"):
+        return memory.get("spoken", "I found a recent sighting.")
+
+    if hinted and unseen:
+        return f"I haven't had a camera view of the {unseen[0]} yet - open that room so I can look for your {item}."
+    if not rooms or len(unseen) == len(rooms):
+        return f"I don't have a camera view to check yet, and no recent sighting of your {item}."
+    looked = [_SPOKEN_ROOM.get(r, r) for r in rooms if _SPOKEN_ROOM.get(r, r) not in unseen]
+    return f"I can't see your {item} in the {_join_words(looked)}, and there's no recent sighting of it."
+
+
+def _join_words(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" or {items[-1]}"
+
+
 async def invoke_mock(message: str, session_id: str) -> dict:
     session = _session(session_id)
     tool_log: list[dict] = []
-    text = message.lower().strip()
+    # Typed and dictated text often drops the apostrophe ("whats in the bedroom").
+    text = re.sub(r"\bwhats\b", "what's", message.lower().strip())
     plain = text.rstrip("?.!")
     pending = session.get("pending")
 
@@ -568,6 +621,9 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         if _is_decline(plain):
             session["pending"] = None
             return _respond(session, "Understood - nothing was changed.", tool_log)
+        # Any other request moves on: a later "yes" must never approve a plan
+        # the user walked away from.
+        session["pending"] = None
 
     # 2 - greetings / meta
     if re.fullmatch(r"(hi|hello|hey|yo|good (morning|evening)|greetings)[\s!.]*", plain):
@@ -575,48 +631,25 @@ async def invoke_mock(message: str, session_id: str) -> dict:
     if any(k in plain for k in ("what can you do", "help", "commands")):
         return _respond(session, 'Try "what\'s on", "turn off the kitchen lights", "prepare for bed", or "where are my keys".', tool_log)
 
-    # 3 - routines (specific phrases only, before generic device control)
+    # 3 - object location first: "where is my phone on the bedside table"
+    # must never be read as a bedtime request.
+    if _LOCATION_Q.search(plain):
+        return _respond(session, await _locate_object(message, tool_log), tool_log)
+
+    # 4 - routines (specific phrases only, before generic device control)
+    question = re.match(r"(what|whats|what's|is|are|show|describe|check)\b", plain)
     routine = None
-    if any(k in plain for k in ("bed", "sleep", "night")) and not _find_kind(text):
+    if re.search(r"\b(bed|bedtime|sleep|night)\b", plain) and not _find_kind(text) and not question:
         routine = "bedtime"
-    elif any(k in plain for k in ("leaving", "leaving home", "i'm off", "going out", "bye")):
+    elif re.search(r"\b(leaving|i'm off|im off|going out|bye)\b", plain):
         routine = "leaving_home"
-    elif any(k in plain for k in ("morning", "wake up", "wake")) and not _find_kind(text):
+    elif re.search(r"\b(morning|wake up|wake)\b", plain) and not _find_kind(text) and not question:
         routine = "morning"
     if routine:
         data = await run("run_routine", {"routine_name": routine})
-        steps = len(data.get("steps", []))
-        if data.get("requires_confirmation") and steps:
-            return _respond(session, f"{data['summary']} Shall I go ahead?", tool_log)
-        return _respond(session, data.get("summary", "Done."), tool_log)
+        return _respond(session, _routine_reply(data), tool_log)
 
-    # 4 - memory / vision / events
-    if any(k in plain for k in ("where are", "where is", "find my", "lost")):
-        obj = re.sub(r".*?\b(?:where (?:are|is)|find my|lost(?: my)?)\b", "", plain).strip() or "it"
-        # Users often include a surface or conversational filler in the item name
-        # ("my table phone", "the phone's location"). Memory stores just "phone".
-        obj = re.sub(r"^(?:my|the|a|an)\s+", "", obj)
-        surface_query = bool(re.search(r"\b(?:table|coffee table|desk|stand|shelf|counter)\b", obj))
-        item = re.sub(r"\b(?:on|at|in|near|by|the|my|table|coffee|desk|stand|shelf|counter|located|location|where|is|are|it)\b", " ", obj)
-        item = re.sub(r"\s+", " ", item).strip(" ?.,!'’") or "it"
-        data = await run("find_object", {"object_name": item})
-        if data.get("found"):
-            return _respond(session, data.get("spoken", "I found a recent sighting."), tool_log)
-        # A table-specific request can use the current living-room view when
-        # event memory has no matching sighting. Report only what the camera sees.
-        if surface_query:
-            room = _find_room(text) or "living"
-            scene = await run("describe_scene", {"camera_id": room})
-            if "error" not in scene:
-                matches = [o for o in scene.get("objects", [])
-                           if item.lower() in o.get("label", "").lower()
-                           and any(s in o.get("location", "").lower()
-                                   for s in ("table", "desk", "stand", "shelf", "counter"))]
-                if matches:
-                    found = matches[0]
-                    return _respond(session, f"I can see your {found['label']} {found.get('location', 'in the room')}.", tool_log)
-                return _respond(session, f"I couldn't find a {item} on a surface in the {room} just now, and there is no recent sighting in memory.", tool_log)
-        return _respond(session, data.get("message", f"No recent sighting of '{item}'."), tool_log)
+    # 5 - memory / vision / events
     if any(k in plain for k in ("what changed", "what happened", "today", "recent")):
         data = await run("get_recent_events", {"since_minutes": 720})
         count = data.get("count", 0)
@@ -655,7 +688,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         return _respond(session, reply, tool_log)
 
 
-    # 5 - device control
+    # 6 - device control
     action = None
     if re.search(r"\b(off|shut|down|power down)\b", plain):
         action = "off"
@@ -694,7 +727,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
         where = f" in the {room}" if room else " around the house"
         return _respond(session, f"{done} {kind}{'' if done == 1 else 's'} switched {action}{where}.", tool_log)
 
-    # 6 - status
+    # 7 - status
     if any(k in plain for k in ("what's on", "what is on", "status", "running",
                                 "happening", "house", "home", "quiet", "calm")) \
             and "happened" not in plain:
@@ -709,7 +742,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
             reply += f" Note: {alerts[0]['message']}."
         return _respond(session, reply, tool_log)
 
-    # 7 - honest fallback
+    # 8 - honest fallback
     return _respond(session, "Sorry - I didn't catch that. Try 'what's on', 'turn off the kitchen lights', or 'prepare for bed'.", tool_log)
 
 

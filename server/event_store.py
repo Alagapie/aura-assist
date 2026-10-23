@@ -94,19 +94,49 @@ def record_object_sighting(object_name: str, location: str, room: str,
     )
 
 
+# What a person asks for vs. what a VLM writes down for the same thing.
+_SYNONYMS = {
+    "phone": ("phone", "smartphone", "mobile", "cellphone"),
+    "remote": ("remote", "controller", "clicker"),
+    "key": ("key",),
+    "glasses": ("glasses", "spectacles", "eyeglasses"),
+    "wallet": ("wallet", "purse"),
+    "cup": ("cup", "mug"),
+    "mug": ("mug", "cup"),
+}
+
+
+def search_terms(object_name: str) -> tuple[str, ...]:
+    """'my Keys' -> ('key',); 'phone' -> ('phone', 'smartphone', ...)."""
+    name = object_name.strip().lower()
+    for prefix in ("my ", "the ", "a ", "an ", "our "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    # Singular form, so "keys" also finds "key ring" ("glasses" stays as is).
+    if name in _SYNONYMS:
+        pass
+    elif name.endswith(("xes", "ches", "shes", "sses")):
+        name = name[:-2]
+    elif name.endswith("s") and not name.endswith("ss"):
+        name = name[:-1]
+    return _SYNONYMS.get(name, (name,))
+
+
 def find_object(object_name: str, since_minutes: int = 10080) -> list[dict]:
-    """Most recent sightings of `object_name` (case-insensitive substring)."""
+    """Most recent sightings of `object_name` (case-insensitive, singular/plural
+    and common synonyms - "keys" matches "key ring", "phone" matches "smartphone")."""
     since = (datetime.now(timezone.utc) - timedelta(minutes=since_minutes)).isoformat(timespec="seconds")
     with _lock:
         rows = _db().execute(
             "SELECT * FROM events WHERE kind = 'object_sighting' AND ts >= ? ORDER BY id DESC LIMIT 200",
             (since,),
         ).fetchall()
-    needle = object_name.strip().lower()
+    terms = search_terms(object_name)
     hits = []
     for r in rows:
         detail = json.loads(r["detail"])
-        if needle in str(detail.get("object", "")).lower():
+        label = str(detail.get("object", "")).lower()
+        if any(t in label for t in terms):
             hits.append({"ts": r["ts"], "room": r["room"], **detail})
     return hits
 

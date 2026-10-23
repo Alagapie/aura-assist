@@ -56,14 +56,20 @@ def control_device(device_id: str, action: str, value: str | int | None = None, 
 
     Args:
         device_id: The device identifier (see get_home_snapshot).
-        action: One of: on, off, toggle, set, lock, unlock, open, close, ring.
+        action: One of: on, off, toggle, set, change_channel, lock, unlock, open, close, ring.
         value: New value for 'set' - brightness percent (1-100), target temperature,
                fan speed (1-3), TV volume (0-100), or cooker level (0-5).
+               For 'change_channel' - the TV channel number.
         confirm: Must be true for unlock; unlocking without confirmation is refused.
     """
     device = state.device(device_id)
     if device is None:
         return {"error": f"unknown device '{device_id}'"}
+
+    try:
+        num = int(float(value)) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return {"error": f"'{value}' is not a number"}
 
     t = device["type"]
     if action in ("lock", "unlock"):
@@ -90,8 +96,13 @@ def control_device(device_id: str, action: str, value: str | int | None = None, 
         if t != "doorbell":
             return {"error": f"{device['name']} is not a doorbell"}
         patch = {"ringing": True}
+    elif action == "change_channel":
+        if t != "tv":
+            return {"error": f"{device['name']} is not a TV"}
+        if num is None:
+            return {"error": "'change_channel' requires a channel number"}
+        patch = {"power": True, "channel": num}
     elif action == "set":
-        num = int(value) if value is not None else None
         if num is None:
             return {"error": "'set' requires a numeric value"}
         if t == "light":
@@ -101,6 +112,7 @@ def control_device(device_id: str, action: str, value: str | int | None = None, 
         elif t == "fan":
             patch = {"power": True, "speed": min(max(num, 1), 3)}
         elif t == "tv":
+            # 'set' is always volume; channels go through change_channel.
             patch = {"power": True, "volume": min(max(num, 0), 100), "muted": False}
         elif t == "cooker":
             level = min(max(num, 0), 5)

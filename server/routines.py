@@ -173,11 +173,11 @@ def plan_routine(name: str, state: HomeState) -> dict:
 def _describe_step(device: dict, patch: dict) -> str:
     if "locked" in patch:
         return f"Lock the {device['name']}"
+    if "targetTemp" in patch:   # before "power": a thermostat patch carries both
+        return f"Set the {device['name']} to {patch['targetTemp']}°C"
     if "power" in patch:
         verb = "Turn on" if patch["power"] else "Turn off"
         return f"{verb} the {device['name']}"
-    if "targetTemp" in patch:
-        return f"Set the {device['name']} to {patch['targetTemp']}°C"
     if "open" in patch:
         return f"{'Open' if patch['open'] else 'Close'} the {device['name']}"
     return f"Update the {device['name']}"
@@ -258,6 +258,36 @@ def _format_action_list(planned: list[dict]) -> str:
     return "\n".join(parts) if parts else ""
 
 
+def _spoken_actions(planned: list[dict]) -> str:
+    """'turn off 6 lights, lock the Front Door Lock and close the Bedroom Curtains'.
+
+    Lights are counted rather than named (nobody wants six names read out),
+    every other step is named, and a long tail collapses into "N more"."""
+    lights_on = lights_off = 0
+    others: list[str] = []
+    for step in planned:
+        desc = step.get("description", "")
+        if desc.startswith(("Turn on", "Turn off")) and any(
+                w in desc.lower() for w in ("light", "lamp", "sconce", "strip")):
+            if step["patch"].get("power"):
+                lights_on += 1
+            else:
+                lights_off += 1
+        elif desc:
+            others.append(desc[0].lower() + desc[1:])
+
+    parts = []
+    if lights_off:
+        parts.append(f"turn off {lights_off} light{'s' if lights_off != 1 else ''}")
+    if lights_on:
+        parts.append(f"turn on {lights_on} light{'s' if lights_on != 1 else ''}")
+    if len(others) > 4:
+        parts += others[:3] + [f"{len(others) - 3} more things"]
+    else:
+        parts += others
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
 def _plan_summary(name: str, planned: list[dict], exceptions: list[str]) -> dict:
     """Generate Alexa-like conversational summary for a routine with detailed action preview.
     
@@ -277,46 +307,8 @@ def _plan_summary(name: str, planned: list[dict], exceptions: list[str]) -> dict
         spoken_parts.append(f"By the way, {exception_text.lower()}.")
     
     if planned:
-        action_count = len(planned)
-        
-        # Build readable action preview using the format function
-        action_list = _format_action_list(planned)
-        
-        # Describe in natural language
-        lights_count = sum(1 for a in planned if 'light' in a.get('description', '').lower())
-        locks_count = sum(1 for a in planned if 'lock' in a.get('description', '').lower())
-        thermostats_count = sum(1 for a in planned if 'thermostat' in a.get('description', '').lower())
-        tvs_count = sum(1 for a in planned if 'tv' in a.get('description', '').lower())
-        devices_count = action_count - lights_count - locks_count - thermostats_count - tvs_count
-        
-        # Build spoken summary based on action count
-        if action_count <= 3:
-            spoken_parts.append(f"I've prepared {action_count} actions for {name.replace('_', ' ')}.")
-        elif action_count <= 6:
-            spoken_parts.append(f"I've prepared {action_count} actions for {name.replace('_', ' ')}.")
-            spoken_parts.append("Here's what I'm going to do:")
-        else:
-            spoken_parts.append(f"I've prepared {action_count} actions to get everything ready.")
-            spoken_parts.append("Here's the plan:")
-        
-        # Add category summaries if action list is too long
-        if action_count > 6:
-            category_parts = []
-            if lights_count > 0:
-                category_parts.append(f"{lights_count} lights")
-            if locks_count > 0:
-                category_parts.append(f"{locks_count} doors/locks")
-            if thermostats_count > 0:
-                category_parts.append(f"{thermostats_count} thermostats")
-            if tvs_count > 0:
-                category_parts.append(f"{tvs_count} devices")
-            if devices_count > 0:
-                category_parts.append(f"{devices_count} other settings")
-            
-            if category_parts:
-                spoken_parts.append(f"- {', '.join(category_parts)}.")
-        
-        spoken_parts.append("Shall I proceed?")
+        spoken_parts.append(f"For {name.replace('_', ' ')}, I'll {_spoken_actions(planned)}.")
+        spoken_parts.append("Shall I go ahead?")
     
     spoken = " ".join(spoken_parts)
     

@@ -82,7 +82,7 @@ def main() -> int:
     check("mock sighting recorded for find_object", len(sightings) >= 1)
 
     event_store.clear()
-    empty = vision.describe_scene("bedroom")
+    empty = vision.describe_scene("bathroom")  # the one room with no hand-written scene
     check("known room without a scene still answers", empty.get("source") == "mock" and empty["objects"] == [])
     unknown = vision.describe_scene("garage")
     check("unknown camera reports an error", "error" in unknown)
