@@ -389,6 +389,65 @@ def _bedrock_describe(camera_id: str, image_bytes: bytes, mime: str = "image/jpe
     return normalised
 
 
+_PINPOINT_RULES = (
+    "You help a person with low vision find one object by touch. Look ONLY at the {label} "
+    "in this 3D render of the {room}. Image 1 is the whole room; any further images are "
+    "zoomed-in quarters of the same room.\n"
+    "RETURN ONLY RAW JSON:\n"
+    '{{"found": true, "surface": "<what it rests on, e.g. nightstand>", '
+    '"which_one": "<how to tell that surface apart from similar ones using landmarks: window, door, wall, which side of the bed or sofa>", '
+    '"position_on_surface": "<e.g. front edge, centre, the corner nearest the lamp - NEVER left or right>", '
+    '"next_to": ["<objects it is touching or right beside>"], '
+    '"orientation": "<how it is lying, e.g. folded with lenses facing the room>", '
+    '"hazards_near": ["<anything fragile, hot or easy to knock over right beside it>"]}}\n'
+    "Rules: describe only what is visible; never say left or right (the camera's left is not "
+    "the person's left) - use landmarks instead; "
+    'if you cannot see the {label}, return {{"found": false}}.'
+)
+
+_pinpoint_cache: dict[tuple[str, str], dict] = {}
+
+
+def pinpoint(camera_id: str, label: str) -> dict | None:
+    """
+    A focused second look at one object in the camera's latest frame: what it
+    rests on, which of several similar surfaces, where on it, what it touches.
+    Returns the parsed JSON, or None (Bedrock off, no frame, or not seen).
+    """
+    camera_id = camera_id_for(camera_id)
+    frame = _last_frame.get(camera_id)
+    if os.environ.get("AURA_USE_BEDROCK") != "1" or not frame:
+        return None
+    key = (hashlib.sha256(frame).hexdigest(), label.lower())
+    if key in _pinpoint_cache:
+        return _pinpoint_cache[key]
+    try:
+        import boto3
+        from botocore.config import Config
+
+        client = boto3.client(
+            "bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            config=Config(connect_timeout=5, read_timeout=float(os.environ.get("AURA_VISION_READ_TIMEOUT", "30")),
+                          retries={"max_attempts": 2, "mode": "standard"}),
+        )
+        images = [{"image": {"format": "jpeg", "source": {"bytes": frame}}}]
+        images += [{"image": {"format": "jpeg", "source": {"bytes": t}}} for t in (_last_tiles.get(camera_id) or [])[:4]]
+        prompt = _PINPOINT_RULES.format(label=label, room=camera_id)
+        response = client.converse(
+            modelId=os.environ.get("AURA_VLM_MODEL", "amazon.nova-lite-v1:0"),
+            messages=[{"role": "user", "content": [*images, {"text": prompt}]}],
+            inferenceConfig={"maxTokens": 400, "temperature": 0.0},
+        )
+        parsed = _extract_json(response["output"]["message"]["content"][0]["text"])
+    except Exception as exc:  # noqa: BLE001 - a failed second look must not break the answer
+        log.warning("Bedrock pinpoint failed (%s)", exc)
+        return None
+    if not parsed or not parsed.get("found", True):
+        return None
+    _pinpoint_cache[key] = parsed
+    return parsed
+
+
 # ------------------------------------------------------------------ api -----
 
 # The most recent frame the simulator posted per camera, so a later
@@ -428,6 +487,7 @@ def forget_frames() -> None:
     _last_frame.clear()
     _last_tiles.clear()
     _last_result.clear()
+    _pinpoint_cache.clear()
 
 
 def describe_scene(camera_id: str, image_path: str | None = None,

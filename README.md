@@ -69,8 +69,9 @@ flowchart LR
 | `run_routine` | Plan (`confirm=false`) or execute (`confirm=true`) bedtime / leaving_home / morning |
 | `get_recent_events` | What changed in the home, with repeated events grouped |
 | `find_object` | Where an object was last seen, from vision sightings |
+| `guide_to_object` | Non-visual directions to a found object: which surface, what it's next to, its height, and a walking route from the door (for people with low vision) |
 | `describe_scene` | What a room camera currently sees: objects, locations, hazards |
-| `generate_daily_briefing` | A calm daily summary (user or caregiver audience) |
+| `generate_daily_briefing` | A calm daily summary; the caregiver version is only shared with the resident's consent |
 | `set_user_preference` | Accessibility and privacy preferences |
 
 ### Where AWS is used (AWS Builder)
@@ -141,6 +142,8 @@ Every change made over MCP shows up live in the 3D house.
 ```bash
 cd simulator && npm test                 # 101 model/geometry checks
 python scripts/smoke_vision.py           # vision + sighting memory (in-process)
+python scripts/smoke_guidance.py         # non-visual directions (in-process)
+python scripts/smoke_care.py             # caregiver consent rules (in-process)
 # with the server running:
 python scripts/smoke_mcp.py              # MCP over Streamable HTTP
 python scripts/smoke_agent.py            # agent behaviour + safety rules

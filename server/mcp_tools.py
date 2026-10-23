@@ -9,6 +9,7 @@ the same `state` and `event_store`, so every surface sees one consistent home.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 
 from mcp.server.mcpserver import MCPServer
@@ -18,7 +19,10 @@ from .devices import describe
 from .home_state import state
 from .routines import ROUTINES, plan_routine
 from .routines import run_routine as _execute_routine
+from .home_layout import guide_for
+from .vision import camera_id_for
 from .vision import describe_scene as _describe_scene
+from .vision import pinpoint as _pinpoint
 
 mcp = MCPServer(
     name="aura-assist",
@@ -227,6 +231,84 @@ def find_object(object_name: str, since_minutes: int = 10080) -> dict:
         "last_seen": latest["ts"],
         "spoken": f"Your {latest['object']} was last seen {latest['location']} at {when}.",
     }
+
+
+def _with_prep(phrase: str, prep: str = "at the") -> str:
+    """'front edge' -> 'at the front edge'; 'near the lamp' stays as it is."""
+    phrase = phrase.strip().rstrip(".")
+    first = phrase.split(" ", 1)[0].lower()
+    return phrase if first in ("on", "at", "in", "near", "by", "beside", "next", "behind", "under", "against") \
+        else f"{prep} {phrase}"
+
+
+@mcp.tool()
+def guide_to_object(object_name: str, camera_id: str, seen_location: str = "") -> dict:
+    """
+    Step-by-step, non-visual directions to an object a camera has found -
+    for people with low vision. Combines a focused second look by the vision
+    model (which surface, where on it, what it touches) with the home's
+    layout (which of several similar surfaces, its height, and the walking
+    route from the room's door, including obstacles).
+
+    Args:
+        object_name: What the person asked for, e.g. "glasses".
+        camera_id: The room where it was seen, e.g. "bedroom".
+        seen_location: What describe_scene said, e.g. "on the nightstand".
+    """
+    room = camera_id_for(camera_id)
+    detail = _pinpoint(room, object_name) or {}
+    surface_text = " ".join(filter(None, [str(detail.get("surface") or ""), seen_location]))
+    cue_text = " ".join(str(v) for v in (detail.get("which_one"), detail.get("next_to"), detail.get("position_on_surface")) if v)
+    guide = guide_for(room, surface_text, cue_text)
+
+    plural = object_name.endswith("s") and not object_name.endswith("ss")
+    be, they = ("are", "They're") if plural else ("is", "It's")
+    prep = "in" if seen_location.strip().lower().startswith("in ") else "on"
+    spot = guide["label"] if guide else (f"the {detail['surface']}" if detail.get("surface")
+                                         else seen_location.strip().removeprefix("on ").removeprefix("in "))
+
+    first = f"Your {object_name} {be} {prep} {spot}"
+    position = str(detail.get("position_on_surface") or "").strip()
+    # Camera-relative left/right would send someone the wrong way; generic
+    # answers ("top", "on the surface") add nothing.
+    if position and not re.search(r"\b(left|right)\b", position, re.I) \
+            and position.lower() not in ("top", "on top", "surface", "on the surface", "on top of it"):
+        first += ", " + _with_prep(position)
+    neighbours = [_bare(n) for n in (detail.get("next_to") or []) if isinstance(n, str)
+                  and _bare(n) and _bare(n) not in surface_text.lower()][:2]
+    if neighbours:
+        first += ", right next to the " + " and the ".join(neighbours)
+    where = [first + "."]
+    if isinstance(detail.get("orientation"), str) and 0 < len(detail["orientation"]) <= 70:
+        where.append(f"{they} {detail['orientation'].rstrip('.')}.")
+    if guide and guide.get("height"):
+        where.append(f"That's {guide['height']} from the floor.")
+    hazards = [h for h in (detail.get("hazards_near") or []) if isinstance(h, str)][:1]
+    if hazards:
+        where.append(f"Reach gently - there's {_article(_bare(hazards[0]))} right beside {'them' if plural else 'it'}.")
+    directions = f"{guide['route']} {guide['obstacles']}" if guide else ""
+
+    # Remember the precise spot, so "when did you last see..." can repeat it.
+    precise = f"{prep} {spot}" + (f", next to the {neighbours[0]}" if neighbours else "")
+    event_store.record_object_sighting(object_name, precise, room, 0.9, camera_id=room)
+
+    return {
+        "object": object_name, "room": room, "surface": spot,
+        "detail": detail, "layout_used": bool(guide),
+        "where": " ".join(where),
+        "directions": directions,
+        "entrance": guide["entrance"] if guide else None,
+        "spoken": " ".join(where + ([directions] if directions else [])),
+    }
+
+
+def _bare(noun: str) -> str:
+    """'a remote control' -> 'remote control'."""
+    return re.sub(r"^(?:a|an|the)\s+", "", noun.strip().lower()).rstrip(".")
+
+
+def _article(noun: str) -> str:
+    return ("an " if noun[:1] in "aeiou" else "a ") + noun
 
 
 # How many objects to hand back to the model. The VLM may see a dozen things;

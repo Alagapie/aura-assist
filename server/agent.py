@@ -154,13 +154,19 @@ def _is_approval(text: str) -> bool:
     does not - a command issued while a confirmation is pending must never be
     mistaken for an approval of that pending action.
     """
-    words = _tokens(text)
+    words = [w for w in _tokens(text) if w not in _POLITE]
     return bool(words) and all(w in APPROVAL_WORDS for w in words)
 
 
 def _is_decline(text: str) -> bool:
-    words = _tokens(text)
+    words = [w for w in _tokens(text) if w not in _POLITE]
     return bool(words) and all(w in DECLINE_WORDS for w in words)
+
+
+# Courtesy words allowed around a yes or no ("no thanks", "yes, thank you").
+# They are stripped, never counted: "thanks" on its own is neither, so it can
+# never approve an unlock by accident.
+_POLITE = {"thanks", "thank", "you", "cheers"}
 
 
 # ------------------------------------------------------------- tool calls --
@@ -313,6 +319,9 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
     pending = session.get("pending")
     if pending:
         plain = message.lower().strip().rstrip("?.!")
+        directions = _directions_reply(session, plain)
+        if directions:
+            return _respond(session, directions, tool_log)
         if _is_approval(plain):
             if pending["type"] == "routine":
                 data, _ = await _call_tool(
@@ -368,7 +377,7 @@ async def invoke_bedrock(message: str, session_id: str) -> dict:
     # Resolve item-location requests in code before the LLM. This keeps voice
     # queries grounded in sighting memory and the current camera view.
     if _LOCATION_Q.search(message.lower()):
-        return _respond(session, await _locate_object(message, tool_log), tool_log)
+        return _respond(session, await _locate_object(message, tool_log, session), tool_log)
     # Fridge-content questions: call describe_scene("fridge") for accurate inventory
     fridge_q = re.search(r"\b(what'?s|what is|show me|check|open|inside|in|contents? of)\b.*\b(fridge|refrigerator|freezer)\b"
                          r"|\b(fridge|refrigerator|freezer)\b.*\b(content|inside|have|got|contain)", message.lower())
@@ -575,7 +584,21 @@ def _extract_item(message: str) -> tuple[str, tuple[str, ...]]:
     return item or "it", surface
 
 
-async def _locate_object(message: str, tool_log: list[dict]) -> str:
+def _directions_reply(session: dict, plain: str) -> str | None:
+    """Answer a pending "would you like directions?" offer, or None."""
+    pending = session.get("pending")
+    if not pending or pending.get("type") != "directions":
+        return None
+    if _is_approval(plain) or re.search(r"\b(directions?|how do i get|guide me|take me|the way)\b", plain):
+        session["pending"] = None
+        return pending["text"]
+    if _is_decline(plain):
+        session["pending"] = None
+        return "Okay."
+    return None
+
+
+async def _locate_object(message: str, tool_log: list[dict], session: dict | None = None) -> str:
     """
     "Where is my X?" - look first, then remember.
 
@@ -609,7 +632,7 @@ async def _locate_object(message: str, tool_log: list[dict]) -> str:
             return None
         when = datetime.fromisoformat(memory["last_seen"]).astimezone().strftime("%I:%M %p").lstrip("0")
         room = _SPOKEN_ROOM.get(memory.get("room"), memory.get("room") or "house")
-        return f"I last saw your {item} {memory.get('location', 'nearby')} in the {room}, at {when}."
+        return f"I last saw your {item} {memory.get('location', 'nearby')}, in the {room}, at {when}."
 
     # "When did you last see my glasses?" is a memory question: answer from
     # the sighting log (with its time) before looking again.
@@ -630,9 +653,20 @@ async def _locate_object(message: str, tool_log: list[dict]) -> str:
             label = obj.get("label", "").lower()
             where = obj.get("location", "").lower()
             if any(t in label for t in terms) and (not surface or any(s in where for s in surface)):
-                spot = obj.get("location") or "in view"
                 # Use the user's word ("glasses"), not the model's ("eye glasses").
                 noun = item if item != "it" else obj["label"]
+                # Found it - now give directions someone who can't see the room can follow.
+                args = {"object_name": noun, "camera_id": room, "seen_location": obj.get("location", "")}
+                guide, _ = await _call_tool("guide_to_object", args)
+                tool_log.append({"name": "guide_to_object", "arguments": args,
+                                 "result": "layout + focused look" if guide.get("layout_used") else "focused look"})
+                # Where first; the walking route is offered, not read out unasked.
+                if guide.get("directions") and session is not None:
+                    session["pending"] = {"type": "directions", "text": guide["directions"]}
+                    return f"{guide['where']} Would you like step-by-step directions from {guide['entrance']}?"
+                if guide.get("spoken"):
+                    return guide["spoken"]
+                spot = obj.get("location") or "in view"
                 return f"I can see your {noun} {spot} in the {_SPOKEN_ROOM.get(room, room)}."
 
     answer = await remembered()
@@ -668,6 +702,9 @@ async def invoke_mock(message: str, session_id: str) -> dict:
 
     # 1 - resolve a pending confirmation first
     if pending:
+        directions = _directions_reply(session, plain)
+        if directions:
+            return _respond(session, directions, tool_log)
         if _is_approval(plain):
             if pending["type"] == "routine":
                 data = await run("run_routine", {"routine_name": pending["name"], "confirm": True})
@@ -699,7 +736,7 @@ async def invoke_mock(message: str, session_id: str) -> dict:
     # 3 - object location first: "where is my phone on the bedside table"
     # must never be read as a bedtime request.
     if _LOCATION_Q.search(plain):
-        return _respond(session, await _locate_object(message, tool_log), tool_log)
+        return _respond(session, await _locate_object(message, tool_log, session), tool_log)
 
     care = await _route_care(message, tool_log)
     if care:
@@ -836,6 +873,7 @@ def _respond(session: dict, reply: str, tool_log: list[dict]) -> dict:
         "tool_calls": tool_log,
         "needs_user_input": bool(pending),
         "pending": (f"Confirm: {pending['name'].replace('_', ' ')}" if pending and pending["type"] == "routine"
+                    else "Hear step-by-step directions?" if pending and pending["type"] == "directions"
                     else "Confirm: unlock the front door" if pending else None),
         "engine": "bedrock" if os.environ.get("AURA_USE_BEDROCK") == "1" else "mock",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
