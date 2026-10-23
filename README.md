@@ -22,6 +22,7 @@ before touching anything. Unlocking the front door always needs an explicit "yes
 |---|---|
 | **Primary track** | **Alexa+**: self-hosted MCP server, Streamable HTTP transport, protocol `2026-07-28` (official `mcp` Python SDK 2.3), plus a simulated Alexa+ experience in a web app |
 | **Mini challenge** | **AWS Builder**: Amazon Bedrock (Converse API) with Amazon Nova Lite for tool-calling, vision and briefings |
+| **Project description** | [docs/PROJECT_DESCRIPTION.md](docs/PROJECT_DESCRIPTION.md) · [PDF](docs/AuraAssist-Project-Description.pdf) |
 | **Friction log** | [docs/friction-log.md](docs/friction-log.md): 12 real issues with steps, severity, workarounds and suggestions |
 
 ![The AuraAssist 3D home simulator](docs/images/house-overview.jpg)
@@ -180,7 +181,7 @@ Otherwise the vision steps correctly report "not seen yet" instead of answering.
 ```
 server/          FastAPI app, MCP server, agent, routines, vision, event store
 scripts/         Bedrock check, terminal chat, smoke tests
-docs/            AWS setup guide, friction log, screenshots
+docs/            project description (MD + PDF), AWS setup guide, friction log, screenshots
 simulator/       React Three Fiber 3D home (the house and its cameras)
   src/three/       rooms, furniture, appliances
   src/services/    server connection, SSE bridge, camera capture
