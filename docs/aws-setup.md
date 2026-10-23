@@ -33,7 +33,7 @@ No console clicking required.
 ## 4. Fill in `.env`
 
 ```powershell
-cd "C:\Users\DELL\Desktop\aura-assist"
+cd aura-assist             # the repository root
 copy .env.example .env     # then edit .env in Notepad
 ```
 
